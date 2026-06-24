@@ -1,3 +1,4 @@
+use crate::endpoint::read_endpoint_register_status;
 use crate::i2c::{i2c_bus_candidates, LinuxI2cDevice};
 use daphne_sc_core::clockchip::{
     ClockChipBus, CLOCKCHIP_DEFAULT_ADDR, CLOCKCHIP_SANITY_REGISTER, CLOCKCHIP_SANITY_VALUE,
@@ -120,6 +121,7 @@ impl LinuxPreflight {
             any_remoteproc_device(),
         ];
         checks.push(clockchip_reachable(&config));
+        checks.extend(endpoint_register_checks(&config));
         PreflightStatus::new(checks)
     }
 }
@@ -286,6 +288,75 @@ fn clockchip_reachable(config: &HashMap<String, String>) -> PreflightCheck {
     }
 }
 
+fn endpoint_register_checks(config: &HashMap<String, String>) -> Vec<PreflightCheck> {
+    match read_endpoint_register_status() {
+        Ok(status) => {
+            let locks_ok = status.mmcm0_locked() && status.mmcm1_locked();
+            let mut checks = vec![if locks_ok {
+                PreflightCheck::ok(
+                    "endpoint_mmcm_locks",
+                    format!("clock_status=0x{:08X}", status.clock_status),
+                )
+            } else {
+                PreflightCheck::fail(
+                    "endpoint_mmcm_locks",
+                    format!(
+                        "clock_status=0x{:08X} mmcm0={} mmcm1={}",
+                        status.clock_status,
+                        status.mmcm0_locked(),
+                        status.mmcm1_locked()
+                    ),
+                )
+            }];
+
+            let success_states = endpoint_success_states(config);
+            let state = status.endpoint_state();
+            let state_ok = success_states.contains(&state);
+            let timestamp_ok = state != 0x8 || status.timestamp_ok();
+            checks.push(if state_ok && timestamp_ok {
+                PreflightCheck::ok(
+                    "endpoint_fsm",
+                    format!(
+                        "endpoint_status=0x{:08X} state=0x{:X} timestamp_ok={}",
+                        status.endpoint_status,
+                        state,
+                        status.timestamp_ok()
+                    ),
+                )
+            } else {
+                PreflightCheck::fail(
+                    "endpoint_fsm",
+                    format!(
+                        "endpoint_status=0x{:08X} state=0x{:X} timestamp_ok={} accepted_states={:?}",
+                        status.endpoint_status,
+                        state,
+                        status.timestamp_ok(),
+                        success_states
+                    ),
+                )
+            });
+            checks
+        }
+        Err(err) => vec![PreflightCheck::fail(
+            "endpoint_registers",
+            format!("endpoint register read failed: {err}"),
+        )],
+    }
+}
+
+fn endpoint_success_states(config: &HashMap<String, String>) -> Vec<u8> {
+    let raw = env_value(config, "ENDPOINT_SUCCESS_STATES", "0x8");
+    let mut states = raw
+        .split([',', ' '])
+        .filter(|token| !token.trim().is_empty())
+        .filter_map(parse_u8_integer)
+        .collect::<Vec<_>>();
+    if states.is_empty() {
+        states.push(0x8);
+    }
+    states
+}
+
 fn clockchip_bus_candidates(config: &HashMap<String, String>) -> Vec<u8> {
     let configured = env_value(config, "CLOCKCHIP_BUS", "auto");
     if !configured.is_empty() && configured != "auto" {
@@ -343,6 +414,10 @@ fn parse_i2c_addr(addr: &str) -> Option<u16> {
     } else {
         trimmed.parse::<u16>().ok()
     }
+}
+
+fn parse_u8_integer(value: &str) -> Option<u8> {
+    parse_i2c_addr(value).and_then(|value| u8::try_from(value).ok())
 }
 
 #[cfg(test)]

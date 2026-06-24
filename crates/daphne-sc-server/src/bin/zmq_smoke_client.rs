@@ -69,12 +69,42 @@ fn main() -> Result<()> {
         let resp = pb::sc::SlowControlStatusResponse::decode(response_env.payload.as_slice())
             .context("decoding SlowControlStatusResponse")?;
         println!(
-            "STATUS success={} message={} services={} errors={}",
+            "STATUS success={} message={} services={} i2c_buses={} temperatures={} rails={} errors={}",
             resp.success,
             resp.message,
             resp.services.len(),
+            resp.i2c.len(),
+            resp.temperatures.len(),
+            resp.rails.len(),
             resp.errors.len()
         );
+        if let Some(clock) = resp.clocks {
+            println!(
+                "  clocks endpoint_source={} mmcm0={} mmcm1={} endpoint_raw=0x{:08x}",
+                clock.endpoint_clock_source_controlled,
+                clock.mmcm0_locked,
+                clock.mmcm1_locked,
+                clock.raw_endpoint_status
+            );
+        }
+        for bus in resp.i2c {
+            let devices = bus
+                .devices
+                .iter()
+                .map(|device| format!("0x{:02x}:{}", device.address, device.name))
+                .collect::<Vec<_>>()
+                .join(",");
+            println!("  i2c {} {} [{}]", bus.bus, bus.path, devices);
+        }
+        for temp in resp.temperatures.iter().take(8) {
+            println!("  temp {} {:.2} C", temp.name, temp.celsius);
+        }
+        for rail in resp.rails.iter().take(12) {
+            println!(
+                "  rail {} voltage={:.4} current={:.4} power={:.4} status={}",
+                rail.name, rail.voltage_v, rail.current_a, rail.power_w, rail.status
+            );
+        }
         for service in resp.services {
             println!(
                 "  service {} active={} state={}",

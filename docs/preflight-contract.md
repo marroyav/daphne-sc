@@ -24,6 +24,11 @@ Before those commands can cross into the RPU path, Linux must report:
 - The Linux I2C and SPI device nodes are present.
 - The configured clock chip address is reachable over I2C.
 - Linux can see the remoteproc interface for the R5/RPU cores.
+- The endpoint MMCM lock bits are both asserted.
+- The endpoint FSM is in an accepted state. By default this is `0x8`
+  (`ST_READY`) and requires `TIMESTAMP_OK=1`. Board-specific accepted states
+  can be configured with `ENDPOINT_SUCCESS_STATES`, matching the existing
+  endpoint service contract.
 
 If any check fails, the protobuf response keeps the normal response type but
 returns `success=false` with a `preflight failed: ...` message listing the
@@ -62,3 +67,8 @@ should expose those raw checks as separate fields as well as a derived
 
 The AFE path must never infer that selecting a clock source means timing is
 ready.
+
+The current Rust status endpoint reports the raw endpoint status register and
+uses the same endpoint FSM gate for AFE preflight. On DAPHNE-15, an endpoint
+state such as `0x6` is visible to clients and blocks AFE commands unless the
+board explicitly declares that state acceptable.

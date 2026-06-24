@@ -22,6 +22,7 @@ Current Rust migration pieces:
 - `clockchip_tool` verifies/programs the external clock chip through `/dev/i2c-*`.
 - `SlowControlStatusRequest` uses message type `1000` and reports preflight/RPU status.
 - `daphne-sc-server --rpu-rpmsg PATH` selects the fixed-size RPU wire transport.
+- Endpoint MMCM lock and FSM/timestamp readiness are part of the AFE preflight gate.
 
 ## Current Starting Point
 

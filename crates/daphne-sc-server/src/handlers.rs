@@ -1,11 +1,16 @@
 use crate::pb;
 use crate::preflight::PreflightStatus;
+use crate::status_collector::collect_slow_control_status;
 use crate::v2;
 use daphne_sc_core::afe::{
     AdcConfig, AfeCommand, AfeFrontendConfig, AfeId, ChannelFrontendConfig, ChannelId,
     ChannelTarget, LnaConfig, PgaConfig,
 };
 use daphne_sc_core::rpu::{AfeCommandReply, RpuAfeTransport, RpuError, RpuLinkStatus};
+use daphne_sc_core::status::{
+    ClockStatus, FirmwareStatus, I2cBusStatus, I2cDeviceStatus, RailReading, ServiceStatus,
+    SlowControlStatus, TemperatureReading,
+};
 use daphne_sc_core::transport::{route_message_type, CommandRoute, MessageTypeV2};
 use prost::Message;
 
@@ -161,8 +166,8 @@ fn handle_slow_control_status<T: RpuAfeTransport>(
         });
     }
 
-    let rpu_status = rpu.status();
-    let success = preflight.ready_for_hardware_commands() && rpu_status.is_ok();
+    let rpu_status_result = rpu.status();
+    let success = preflight.ready_for_hardware_commands() && rpu_status_result.is_ok();
     let message = if success {
         "ok".to_string()
     } else if !preflight.ready_for_hardware_commands() {
@@ -170,7 +175,7 @@ fn handle_slow_control_status<T: RpuAfeTransport>(
     } else {
         format!(
             "RPU status failed: {}",
-            rpu_status
+            rpu_status_result
                 .as_ref()
                 .err()
                 .map(ToString::to_string)
@@ -178,115 +183,113 @@ fn handle_slow_control_status<T: RpuAfeTransport>(
         )
     };
 
-    let rpu_status = rpu_status.unwrap_or_else(|err| daphne_sc_core::rpu::RpuLinkStatus {
-        available: false,
-        running: false,
-        firmware: None,
-        heartbeat: None,
-        last_fault: Some(err.to_string()),
-    });
+    let mut status = collect_slow_control_status(
+        preflight,
+        rpu_status_result.as_ref().cloned().unwrap_or_else(|err| {
+            daphne_sc_core::rpu::RpuLinkStatus {
+                available: false,
+                running: false,
+                firmware: None,
+                heartbeat: None,
+                last_fault: Some(err.to_string()),
+            }
+        }),
+    );
+    if let Err(err) = rpu_status_result {
+        status.errors.push(format!("rpu: {err}"));
+    }
 
-    v2::encode(pb::sc::SlowControlStatusResponse {
+    v2::encode(slow_control_status_to_pb(success, message, status))
+}
+
+fn slow_control_status_to_pb(
+    success: bool,
+    message: String,
+    status: SlowControlStatus,
+) -> pb::sc::SlowControlStatusResponse {
+    pb::sc::SlowControlStatusResponse {
         success,
         message,
-        firmware: Some(firmware_status_from_preflight(preflight)),
+        firmware: Some(firmware_status_to_pb(status.firmware)),
         rpu: Some(pb::sc::RpuStatus {
-            available: rpu_status.available,
-            running: rpu_status.running,
-            firmware: rpu_status.firmware.unwrap_or_default(),
-            heartbeat: rpu_status.heartbeat.unwrap_or_default(),
-            last_fault: rpu_status.last_fault.unwrap_or_default(),
+            available: status.rpu.available,
+            running: status.rpu.running,
+            firmware: status.rpu.firmware.unwrap_or_default(),
+            heartbeat: status.rpu.heartbeat.unwrap_or_default(),
+            last_fault: status.rpu.last_fault.unwrap_or_default(),
         }),
-        i2c: i2c_status_from_preflight(preflight),
-        clocks: Some(clock_status_from_preflight(preflight)),
-        temperatures: Vec::new(),
-        rails: Vec::new(),
-        services: service_status_from_preflight(preflight),
-        errors: preflight_errors(preflight),
-    })
+        i2c: status.i2c.into_iter().map(i2c_bus_to_pb).collect(),
+        clocks: Some(clock_status_to_pb(status.clocks)),
+        temperatures: status
+            .temperatures
+            .into_iter()
+            .map(temperature_to_pb)
+            .collect(),
+        rails: status.rails.into_iter().map(rail_to_pb).collect(),
+        services: status.services.into_iter().map(service_to_pb).collect(),
+        errors: status.errors,
+    }
 }
 
-fn firmware_status_from_preflight(preflight: &PreflightStatus) -> pb::sc::FirmwareStatus {
-    let fpga_state = preflight
-        .checks()
-        .iter()
-        .find(|check| check.name == "fpga_manager")
-        .map(|check| check.detail.clone())
-        .unwrap_or_default();
-    let pl_devices_present = preflight
-        .checks()
-        .iter()
-        .filter(|check| check.name == "pl_i2c_device" || check.name == "pl_spi_device")
-        .filter(|check| check.ok)
-        .map(|check| check.detail.clone())
-        .collect();
+fn firmware_status_to_pb(status: FirmwareStatus) -> pb::sc::FirmwareStatus {
     pb::sc::FirmwareStatus {
-        loaded: preflight
-            .checks()
-            .iter()
-            .any(|check| check.name == "fpga_manager" && check.ok),
-        fpga_manager_state: fpga_state,
-        overlay_name: String::new(),
-        build_id: String::new(),
-        pl_devices_present,
+        loaded: status.loaded,
+        fpga_manager_state: status.fpga_manager_state.unwrap_or_default(),
+        overlay_name: status.overlay_name.unwrap_or_default(),
+        build_id: status.build_id.unwrap_or_default(),
+        pl_devices_present: status.pl_devices_present,
     }
 }
 
-fn i2c_status_from_preflight(preflight: &PreflightStatus) -> Vec<pb::sc::I2cBusStatus> {
-    preflight
-        .checks()
-        .iter()
-        .find(|check| check.name == "i2c_device_node")
-        .map(|check| {
-            check
-                .detail
-                .split(',')
-                .filter_map(|path| {
-                    let bus = path.rsplit('-').next()?.parse().ok()?;
-                    Some(pb::sc::I2cBusStatus {
-                        bus,
-                        path: path.to_string(),
-                        devices: Vec::new(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn i2c_bus_to_pb(status: I2cBusStatus) -> pb::sc::I2cBusStatus {
+    pb::sc::I2cBusStatus {
+        bus: u32::from(status.bus),
+        path: status.path,
+        devices: status.devices.into_iter().map(i2c_device_to_pb).collect(),
+    }
 }
 
-fn clock_status_from_preflight(preflight: &PreflightStatus) -> pb::sc::ClockStatus {
-    let clock_ready = preflight
-        .checks()
-        .iter()
-        .any(|check| check.name == "clockchip_i2c" && check.ok);
+fn i2c_device_to_pb(status: I2cDeviceStatus) -> pb::sc::I2cDeviceStatus {
+    pb::sc::I2cDeviceStatus {
+        address: u32::from(status.address),
+        name: status.name,
+        present: status.present,
+        status: status.status.unwrap_or_default(),
+    }
+}
+
+fn clock_status_to_pb(status: ClockStatus) -> pb::sc::ClockStatus {
     pb::sc::ClockStatus {
-        endpoint_clock_source_controlled: clock_ready,
-        mmcm0_locked: false,
-        mmcm1_locked: false,
-        raw_endpoint_status: 0,
+        endpoint_clock_source_controlled: status.endpoint_clock_source_controlled.unwrap_or(false),
+        mmcm0_locked: status.mmcm0_locked.unwrap_or(false),
+        mmcm1_locked: status.mmcm1_locked.unwrap_or(false),
+        raw_endpoint_status: status.raw_endpoint_status.unwrap_or_default(),
     }
 }
 
-fn service_status_from_preflight(preflight: &PreflightStatus) -> Vec<pb::sc::ServiceStatus> {
-    preflight
-        .checks()
-        .iter()
-        .filter(|check| check.name.ends_with(".service"))
-        .map(|check| pb::sc::ServiceStatus {
-            name: check.name.clone(),
-            active: check.ok,
-            state: check.detail.clone(),
-        })
-        .collect()
+fn temperature_to_pb(status: TemperatureReading) -> pb::sc::TemperatureReading {
+    pb::sc::TemperatureReading {
+        name: status.name,
+        celsius: status.celsius,
+    }
 }
 
-fn preflight_errors(preflight: &PreflightStatus) -> Vec<String> {
-    preflight
-        .checks()
-        .iter()
-        .filter(|check| !check.ok)
-        .map(|check| format!("{}: {}", check.name, check.detail))
-        .collect()
+fn rail_to_pb(status: RailReading) -> pb::sc::RailReading {
+    pb::sc::RailReading {
+        name: status.name,
+        voltage_v: status.voltage_v.unwrap_or_default(),
+        current_a: status.current_a.unwrap_or_default(),
+        power_w: status.power_w.unwrap_or_default(),
+        status: status.status.unwrap_or_default(),
+    }
+}
+
+fn service_to_pb(status: ServiceStatus) -> pb::sc::ServiceStatus {
+    pb::sc::ServiceStatus {
+        name: status.name,
+        active: status.active,
+        state: status.state,
+    }
 }
 
 fn handle_not_implemented(message_type: MessageTypeV2) -> Vec<u8> {
