@@ -78,14 +78,16 @@ half, channels 4..7 occupy the high half, and companion channels differ by 4.
 - AFE reset and power-state bits;
 - applying the current RPU `ConfigureFrontend` sequence for AFE/channel slow
   controls;
+- frontend alignment using delay scan, bitslip scan, and stable FCLK
+  verification;
 - bounded spin waits on the AFE and DAC busy bits.
 
-It intentionally returns `Unsupported` for:
-
-- alignment;
-
-Alignment requires the frontend register contract to be ported before it can be
-safely enabled.
+Alignment uses the frontend and spy-buffer register contract from
+`FpgaRegDict.cpp`: reset delay/SERDES, disable delay VTC, require
+`DELAYCTRL_READY`, scan 512 delay taps, scan 16 bitslip taps for
+`0x00FF00FF`, verify four additional snapshots, then re-enable delay VTC. The
+RPU backend reports a hardware fault if any AFE cannot reach that stable
+pattern.
 
 The AFE function dictionary is ported from `defines.hpp` into
 `daphne-sc-core/src/afe_functions.rs`. The Rust implementation preserves the

@@ -14,9 +14,31 @@ pub const DAC_GAIN_BIAS_U53_OFFSET: u32 = 0x0C00_0008;
 pub const DAC_GAIN_BIAS_U5_OFFSET: u32 = 0x0C00_000C;
 pub const BIAS_ENABLE_OFFSET: u32 = 0x1400_000C;
 
+pub const FRONTEND_CONTROL_OFFSET: u32 = 0x0800_0000;
+pub const FRONTEND_STATUS_OFFSET: u32 = 0x0800_0004;
+pub const FRONTEND_TRIGGER_OFFSET: u32 = 0x0800_0008;
+pub const FRONTEND_DELAY_BASE_OFFSET: u32 = 0x0800_000C;
+pub const FRONTEND_BITSLIP_BASE_OFFSET: u32 = 0x0800_0020;
+pub const FRONTEND_AFE_STRIDE: u32 = 0x0000_0004;
+
+pub const SPY_BUFFER_BASE_OFFSET: u32 = 0x1000_0000;
+pub const SPY_BUFFER_AFE_STRIDE: u32 = 0x0000_9000;
+pub const SPY_BUFFER_CHANNEL_STRIDE: u32 = 0x0000_1000;
+pub const SPY_BUFFER_FRAME_CLOCK_CHANNEL: u8 = 8;
+
 pub const AFE_GLOBAL_RESET_BIT: u8 = 0;
 pub const AFE_GLOBAL_POWERSTATE_BIT: u8 = 1;
 pub const AFE_GLOBAL_BUSY_BITS: core::ops::RangeInclusive<u8> = 2..=4;
+
+pub const FRONTEND_DELAYCTRL_RESET_BIT: u8 = 0;
+pub const FRONTEND_SERDES_RESET_BIT: u8 = 1;
+pub const FRONTEND_DELAY_EN_VTC_BIT: u8 = 2;
+pub const FRONTEND_DELAYCTRL_READY_BIT: u8 = 0;
+pub const FRONTEND_TRIGGER_WORD: u32 = 0x0000_BABA;
+pub const FRONTEND_DELAY_TAPS: u32 = 512;
+pub const FRONTEND_BITSLIP_TAPS: u32 = 16;
+pub const FRONTEND_VERIFY_READS: u32 = 4;
+pub const FRONTEND_EXPECTED_FCLK_WORD: u32 = 0x00FF_00FF;
 
 pub const AFE_SPI_TRIGGER_WORD: u32 = 0x0000_0002;
 pub const AFE_SPI_IDLE_WORD: u32 = 0x0000_0000;
@@ -77,6 +99,31 @@ pub const fn afe_dac_offset_offset(afe_pl: u8) -> Option<u32> {
     afe_register_offset(AFE_DAC_OFFSET_BASE_OFFSET, afe_pl)
 }
 
+pub const fn frontend_delay_offset(afe_board: u8) -> Option<u32> {
+    frontend_register_offset(FRONTEND_DELAY_BASE_OFFSET, afe_board)
+}
+
+pub const fn frontend_bitslip_offset(afe_board: u8) -> Option<u32> {
+    frontend_register_offset(FRONTEND_BITSLIP_BASE_OFFSET, afe_board)
+}
+
+pub const fn spy_buffer_frame_clock_offset(afe_board: u8, sample: u32) -> Option<u32> {
+    spy_buffer_channel_offset(afe_board, SPY_BUFFER_FRAME_CLOCK_CHANNEL, sample)
+}
+
+pub const fn spy_buffer_channel_offset(afe_board: u8, channel: u8, sample: u32) -> Option<u32> {
+    if afe_board < AFE_COUNT && channel <= SPY_BUFFER_FRAME_CLOCK_CHANNEL {
+        Some(
+            SPY_BUFFER_BASE_OFFSET
+                + SPY_BUFFER_AFE_STRIDE * afe_board as u32
+                + SPY_BUFFER_CHANNEL_STRIDE * channel as u32
+                + sample * core::mem::size_of::<u32>() as u32,
+        )
+    } else {
+        None
+    }
+}
+
 pub const fn dac_gain_bias_offset(chip: DacChip) -> u32 {
     match chip {
         DacChip::U50 => DAC_GAIN_BIAS_U50_OFFSET,
@@ -133,6 +180,14 @@ const fn afe_register_offset(base: u32, afe_pl: u8) -> Option<u32> {
     }
 }
 
+const fn frontend_register_offset(base: u32, afe_board: u8) -> Option<u32> {
+    if afe_board < AFE_COUNT {
+        Some(base + FRONTEND_AFE_STRIDE * afe_board as u32)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +208,22 @@ mod tests {
         assert_eq!(afe_register_word(0x03, 0x1234), 0x0003_1234);
         assert_eq!(afe_register_address_word(0x03), 0x0003_0000);
         assert_eq!(AFE_SPI_TRIGGER_WORD, 0x0000_0002);
+    }
+
+    #[test]
+    fn frontend_and_spy_offsets_match_cpp_register_dictionary() {
+        assert_eq!(FRONTEND_CONTROL_OFFSET, 0x0800_0000);
+        assert_eq!(FRONTEND_STATUS_OFFSET, 0x0800_0004);
+        assert_eq!(FRONTEND_TRIGGER_OFFSET, 0x0800_0008);
+        assert_eq!(frontend_delay_offset(0), Some(0x0800_000C));
+        assert_eq!(frontend_delay_offset(4), Some(0x0800_001C));
+        assert_eq!(frontend_bitslip_offset(0), Some(0x0800_0020));
+        assert_eq!(frontend_bitslip_offset(4), Some(0x0800_0030));
+        assert_eq!(frontend_delay_offset(5), None);
+        assert_eq!(spy_buffer_channel_offset(0, 0, 0), Some(0x1000_0000));
+        assert_eq!(spy_buffer_frame_clock_offset(0, 0), Some(0x1000_8000));
+        assert_eq!(spy_buffer_frame_clock_offset(4, 0), Some(0x1002_C000));
+        assert_eq!(spy_buffer_frame_clock_offset(5, 0), None);
     }
 
     #[test]
