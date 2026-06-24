@@ -21,7 +21,7 @@ If `--rpu-rpmsg` is not provided, AFE commands continue to fail closed.
 
 - Command frame size: 64 bytes.
 - Reply frame size: 64 bytes.
-- ABI version: 1.
+- ABI version: 2.
 - Endianness: little-endian.
 - Magic: `0x52505344`.
 
@@ -37,10 +37,28 @@ The current frame supports bounded scalar/register/reset/power/align commands:
 - set AFE power state;
 - align AFE;
 - status/heartbeat query.
+- write AFE function with a bounded UTF-8 function name.
+- configure frontend through a staged multi-frame sequence.
 
-`ConfigureFrontend` and `WriteFunction` are intentionally rejected until the
-chunked/string-dictionary extension is added. They must not be silently
-translated into partial command sequences on Linux.
+## Frontend Configuration Sequence
+
+`ConfigureFrontend` is sent as multiple 64-byte command frames:
+
+1. `BeginConfigureFrontend`: carries `bias_control`, expected AFE record count,
+   and expected channel record count.
+2. One `ConfigureAfe` frame per AFE record: carries board/PL AFE ID,
+   attenuation, bias, ADC flags, PGA fields, and LNA fields.
+3. One `ConfigureChannel` frame per channel record: carries channel ID,
+   board/PL AFE ID, trim, offset, and gain.
+4. `ApplyConfigureFrontend`: tells the RPU to apply the staged configuration.
+
+The RPU runtime rejects `ApplyConfigureFrontend` unless the begin frame was
+received and the expected number of AFE and channel records has been staged.
+The hardware implementation behind the RPU trait should treat per-record calls
+as staging operations and make hardware-visible changes only on apply.
+
+`WriteFunction` is a single frame. The function name is limited to the 31-byte
+command payload, with the first payload byte carrying the name length.
 
 ## Interlock Semantics
 

@@ -17,8 +17,10 @@ pub use clockchip::{
 };
 pub use rpu::{AfeCommandReply, RpuAfeTransport, RpuError, RpuLinkStatus};
 pub use rpu_wire::{
-    RpuWireCommand, RpuWireError, RpuWireOp, RpuWireReply, RpuWireStatus, RpuWireTarget,
-    RPU_WIRE_ABI_VERSION, RPU_WIRE_COMMAND_LEN, RPU_WIRE_MAGIC, RPU_WIRE_REPLY_LEN,
+    RpuWireAfeConfig, RpuWireChannelConfig, RpuWireCommand, RpuWireConfigCounts, RpuWireError,
+    RpuWireOp, RpuWireReply, RpuWireStatus, RpuWireTarget, RPU_WIRE_ABI_VERSION,
+    RPU_WIRE_COMMAND_LEN, RPU_WIRE_FUNCTION_NAME_MAX, RPU_WIRE_MAGIC, RPU_WIRE_PAYLOAD_LEN,
+    RPU_WIRE_REPLY_LEN,
 };
 pub use status::SlowControlStatus;
 pub use transport::{route_message_type, CommandRoute, MessageTypeV2};

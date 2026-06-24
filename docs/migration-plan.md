@@ -54,10 +54,12 @@
 
 Current Rust status:
 
-- Fixed-size RPU command/reply ABI v1 exists in `daphne-sc-core`.
+- Fixed-size RPU command/reply ABI v2 exists in `daphne-sc-core`.
 - Linux server can select an RPMsg-like transport with `--rpu-rpmsg PATH`.
-- Unsupported variable-length operations fail closed until the chunked protocol
-  is added.
+- Scalar AFE commands, bounded write-function commands, and staged
+  configure-frontend sequences are encoded for the RPU.
+- The no-std RPU runtime scaffold rejects incomplete frontend config sequences
+  and still requires an interlock-ready state before any AFE command is staged.
 
 ## Milestone 4: AFE Command Parity
 

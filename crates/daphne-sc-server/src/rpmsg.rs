@@ -77,7 +77,7 @@ impl RpuAfeTransport for RpmsgAfeTransport {
             Ok(reply) => Ok(RpuLinkStatus {
                 available: true,
                 running: !matches!(reply.status, RpuWireStatus::Fault | RpuWireStatus::Timeout),
-                firmware: Some("rpmsg-rpu-wire-abi-v1".to_string()),
+                firmware: Some("rpmsg-rpu-wire-abi-v2".to_string()),
                 heartbeat: Some(reply.heartbeat),
                 last_fault: self.last_fault.clone(),
             }),
@@ -89,10 +89,19 @@ impl RpuAfeTransport for RpmsgAfeTransport {
         command
             .validate()
             .map_err(|err| RpuError::Rejected(err.to_string()))?;
-        let sequence = self.next_sequence();
-        let wire = RpuWireCommand::from_afe_command(sequence, &command)
+        let frame_count = RpuWireCommand::frame_count_for_afe_command(&command)
             .map_err(|err| RpuError::Rejected(err.to_string()))?;
-        let reply = self.transact(wire)?;
+        let first_sequence = self.reserve_sequences(frame_count);
+        let frames = RpuWireCommand::from_afe_command_sequence(first_sequence, &command)
+            .map_err(|err| RpuError::Rejected(err.to_string()))?;
+
+        let mut final_reply = None;
+        for frame in frames {
+            let reply = self.transact(frame)?;
+            final_reply = Some(reply);
+        }
+        let reply = final_reply
+            .ok_or_else(|| RpuError::Transport("RPU command produced no frames".to_string()))?;
 
         let (accepted, applied, message) = match reply.status {
             RpuWireStatus::Accepted => (true, false, "RPU accepted command".to_string()),
@@ -117,6 +126,22 @@ impl RpuAfeTransport for RpmsgAfeTransport {
             readback: reply.readback,
             message,
         })
+    }
+}
+
+impl RpmsgAfeTransport {
+    fn reserve_sequences(&mut self, count: usize) -> u64 {
+        let count = u64::try_from(count).unwrap_or(u64::MAX);
+        if count == 0 {
+            return self.next_sequence;
+        }
+        if self.next_sequence > u64::MAX.saturating_sub(count) {
+            self.next_sequence = 1;
+        }
+
+        let first = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(count).max(1);
+        first
     }
 }
 

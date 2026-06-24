@@ -1,8 +1,9 @@
 #![no_std]
 
 use daphne_sc_core::{
-    RpuWireCommand, RpuWireError, RpuWireOp, RpuWireReply, RpuWireStatus, RpuWireTarget,
-    RPU_WIRE_ABI_VERSION, RPU_WIRE_COMMAND_LEN, RPU_WIRE_REPLY_LEN,
+    RpuWireAfeConfig, RpuWireChannelConfig, RpuWireCommand, RpuWireConfigCounts, RpuWireError,
+    RpuWireOp, RpuWireReply, RpuWireStatus, RpuWireTarget, RPU_WIRE_ABI_VERSION,
+    RPU_WIRE_COMMAND_LEN, RPU_WIRE_REPLY_LEN,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,12 +70,18 @@ pub trait AfeHardware {
     fn do_reset(&mut self) -> Result<(), Self::Error>;
     fn set_power_state(&mut self, enabled: bool) -> Result<(), Self::Error>;
     fn align(&mut self) -> Result<(), Self::Error>;
+    fn begin_configure_frontend(&mut self, counts: RpuWireConfigCounts) -> Result<(), Self::Error>;
+    fn configure_afe(&mut self, config: RpuWireAfeConfig) -> Result<(), Self::Error>;
+    fn configure_channel(&mut self, config: RpuWireChannelConfig) -> Result<(), Self::Error>;
+    fn apply_configure_frontend(&mut self) -> Result<(), Self::Error>;
+    fn write_function(&mut self, afe_pl: u8, name: &str, value: u16) -> Result<u32, Self::Error>;
 }
 
 pub struct RpuRuntime<H> {
     hardware: H,
     heartbeat: u64,
     interlock: InterlockState,
+    config_state: ConfigState,
 }
 
 impl<H> RpuRuntime<H> {
@@ -83,6 +90,7 @@ impl<H> RpuRuntime<H> {
             hardware,
             heartbeat: 0,
             interlock: InterlockState::default(),
+            config_state: ConfigState::default(),
         }
     }
 
@@ -198,6 +206,40 @@ impl<H: AfeHardware> RpuRuntime<H> {
             DoReset => hw(self.hardware.do_reset()).map(|()| None),
             SetPowerState => hw(self.hardware.set_power_state(command.flags != 0)).map(|()| None),
             Align => hw(self.hardware.align()).map(|()| None),
+            BeginConfigureFrontend => {
+                let counts = command
+                    .configure_counts()
+                    .map_err(|_| ApplyError::Rejected)?;
+                hw(self.hardware.begin_configure_frontend(counts))?;
+                self.config_state = ConfigState::begin(counts);
+                Ok(None)
+            }
+            ConfigureAfe => {
+                let config = command.afe_config().map_err(|_| ApplyError::Rejected)?;
+                self.config_state.require_afe_slot()?;
+                hw(self.hardware.configure_afe(config))?;
+                self.config_state.received_afes += 1;
+                Ok(None)
+            }
+            ConfigureChannel => {
+                let config = command.channel_config().map_err(|_| ApplyError::Rejected)?;
+                self.config_state.require_channel_slot()?;
+                hw(self.hardware.configure_channel(config))?;
+                self.config_state.received_channels += 1;
+                Ok(None)
+            }
+            ApplyConfigureFrontend => {
+                self.config_state.require_complete()?;
+                hw(self.hardware.apply_configure_frontend())?;
+                self.config_state = ConfigState::default();
+                Ok(None)
+            }
+            WriteFunction => {
+                let afe = require_afe(command)?;
+                let name = command.function_name().map_err(|_| ApplyError::Rejected)?;
+                let value = u16::try_from(command.value).map_err(|_| ApplyError::Rejected)?;
+                hw(self.hardware.write_function(afe, name, value)).map(Some)
+            }
         }
     }
 
@@ -219,6 +261,54 @@ enum ApplyError {
     HardwareFault,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ConfigState {
+    active: bool,
+    expected_afes: u16,
+    expected_channels: u16,
+    received_afes: u16,
+    received_channels: u16,
+}
+
+impl ConfigState {
+    fn begin(counts: RpuWireConfigCounts) -> Self {
+        Self {
+            active: true,
+            expected_afes: counts.afe_count,
+            expected_channels: counts.channel_count,
+            received_afes: 0,
+            received_channels: 0,
+        }
+    }
+
+    fn require_afe_slot(self) -> Result<(), ApplyError> {
+        if self.active && self.received_afes < self.expected_afes {
+            Ok(())
+        } else {
+            Err(ApplyError::Rejected)
+        }
+    }
+
+    fn require_channel_slot(self) -> Result<(), ApplyError> {
+        if self.active && self.received_channels < self.expected_channels {
+            Ok(())
+        } else {
+            Err(ApplyError::Rejected)
+        }
+    }
+
+    fn require_complete(self) -> Result<(), ApplyError> {
+        if self.active
+            && self.received_afes == self.expected_afes
+            && self.received_channels == self.expected_channels
+        {
+            Ok(())
+        } else {
+            Err(ApplyError::Rejected)
+        }
+    }
+}
+
 fn require_afe(command: &RpuWireCommand) -> Result<u8, ApplyError> {
     if command.target == RpuWireTarget::Afe {
         Ok(command.afe_pl)
@@ -237,12 +327,20 @@ extern crate std;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daphne_sc_core::afe::{
+        AdcConfig, AfeCommand, AfeFrontendConfig, AfeId, ChannelFrontendConfig, ChannelId,
+        LnaConfig, PgaConfig,
+    };
     use daphne_sc_core::{RpuWireCommand, RpuWireStatus};
 
     #[derive(Default)]
     struct FakeHardware {
         writes: std::vec::Vec<(u8, u16, u32)>,
         reset: bool,
+        begins: std::vec::Vec<RpuWireConfigCounts>,
+        afe_configs: std::vec::Vec<RpuWireAfeConfig>,
+        channel_configs: std::vec::Vec<RpuWireChannelConfig>,
+        apply_count: u32,
     }
 
     impl AfeHardware for FakeHardware {
@@ -309,6 +407,38 @@ mod tests {
         fn align(&mut self) -> Result<(), Self::Error> {
             Ok(())
         }
+
+        fn begin_configure_frontend(
+            &mut self,
+            counts: RpuWireConfigCounts,
+        ) -> Result<(), Self::Error> {
+            self.begins.push(counts);
+            Ok(())
+        }
+
+        fn configure_afe(&mut self, config: RpuWireAfeConfig) -> Result<(), Self::Error> {
+            self.afe_configs.push(config);
+            Ok(())
+        }
+
+        fn configure_channel(&mut self, config: RpuWireChannelConfig) -> Result<(), Self::Error> {
+            self.channel_configs.push(config);
+            Ok(())
+        }
+
+        fn apply_configure_frontend(&mut self) -> Result<(), Self::Error> {
+            self.apply_count += 1;
+            Ok(())
+        }
+
+        fn write_function(
+            &mut self,
+            _afe_pl: u8,
+            _name: &str,
+            value: u16,
+        ) -> Result<u32, Self::Error> {
+            Ok(u32::from(value))
+        }
     }
 
     fn ready() -> InterlockState {
@@ -338,18 +468,13 @@ mod tests {
     #[test]
     fn interlock_blocks_afe_commands() {
         let mut runtime = RpuRuntime::new(FakeHardware::default());
-        let command = RpuWireCommand {
-            sequence: 9,
-            op: RpuWireOp::WriteRegister,
-            target: RpuWireTarget::Afe,
-            afe_board: 1,
-            afe_pl: 4,
-            channel: 0,
-            afe_channel: 0,
-            register: 3,
-            value: 0x1234,
-            flags: 0,
-        };
+        let mut command = RpuWireCommand::status(9);
+        command.op = RpuWireOp::WriteRegister;
+        command.target = RpuWireTarget::Afe;
+        command.afe_board = 1;
+        command.afe_pl = 4;
+        command.register = 3;
+        command.value = 0x1234;
 
         let reply = RpuWireReply::decode(&runtime.handle_frame(&command.encode())).unwrap();
 
@@ -361,23 +486,86 @@ mod tests {
     fn ready_runtime_applies_register_write() {
         let mut runtime = RpuRuntime::new(FakeHardware::default());
         runtime.set_interlock(ready());
-        let command = RpuWireCommand {
-            sequence: 10,
-            op: RpuWireOp::WriteRegister,
-            target: RpuWireTarget::Afe,
-            afe_board: 1,
-            afe_pl: 4,
-            channel: 0,
-            afe_channel: 0,
-            register: 3,
-            value: 0x1234,
-            flags: 0,
-        };
+        let mut command = RpuWireCommand::status(10);
+        command.op = RpuWireOp::WriteRegister;
+        command.target = RpuWireTarget::Afe;
+        command.afe_board = 1;
+        command.afe_pl = 4;
+        command.register = 3;
+        command.value = 0x1234;
 
         let reply = RpuWireReply::decode(&runtime.handle_frame(&command.encode())).unwrap();
 
         assert_eq!(reply.status, RpuWireStatus::Applied);
         assert_eq!(reply.readback, Some(0x1234));
         assert_eq!(runtime.hardware_mut().writes, [(4, 3, 0x1234)]);
+    }
+
+    #[test]
+    fn ready_runtime_applies_complete_config_sequence() {
+        let mut runtime = RpuRuntime::new(FakeHardware::default());
+        runtime.set_interlock(ready());
+        let command = AfeCommand::ConfigureFrontend {
+            afes: std::vec![AfeFrontendConfig {
+                afe: AfeId::from_board(1).unwrap(),
+                attenuation: 100,
+                bias: 200,
+                adc: AdcConfig {
+                    resolution: true,
+                    output_format: false,
+                    msb_first: true,
+                },
+                pga: PgaConfig {
+                    lpf_cut_frequency: 3,
+                    integrator_disable: true,
+                    gain: false,
+                },
+                lna: LnaConfig {
+                    clamp: 4,
+                    gain: 5,
+                    integrator_disable: true,
+                },
+            }],
+            channels: std::vec![ChannelFrontendConfig {
+                channel: ChannelId::new(10).unwrap(),
+                trim: 300,
+                offset: 400,
+                gain: 500,
+            }],
+            bias_control: 600,
+        };
+
+        let frames = RpuWireCommand::from_afe_command_sequence(100, &command).unwrap();
+        let mut last = None;
+        for frame in frames {
+            last = Some(RpuWireReply::decode(&runtime.handle_frame(&frame.encode())).unwrap());
+        }
+
+        let reply = last.unwrap();
+        let hardware = runtime.hardware_mut();
+        assert_eq!(reply.status, RpuWireStatus::Applied);
+        assert_eq!(hardware.begins.len(), 1);
+        assert_eq!(hardware.afe_configs.len(), 1);
+        assert_eq!(hardware.channel_configs.len(), 1);
+        assert_eq!(hardware.apply_count, 1);
+    }
+
+    #[test]
+    fn runtime_rejects_incomplete_config_apply() {
+        let mut runtime = RpuRuntime::new(FakeHardware::default());
+        runtime.set_interlock(ready());
+        let mut begin = RpuWireCommand::status(200);
+        begin.op = RpuWireOp::BeginConfigureFrontend;
+        begin.value = 600;
+        begin.flags = 1 | (1 << 16);
+        let mut apply = RpuWireCommand::status(201);
+        apply.op = RpuWireOp::ApplyConfigureFrontend;
+
+        let begin_reply = RpuWireReply::decode(&runtime.handle_frame(&begin.encode())).unwrap();
+        let apply_reply = RpuWireReply::decode(&runtime.handle_frame(&apply.encode())).unwrap();
+
+        assert_eq!(begin_reply.status, RpuWireStatus::Applied);
+        assert_eq!(apply_reply.status, RpuWireStatus::Rejected);
+        assert_eq!(runtime.hardware_mut().apply_count, 0);
     }
 }
