@@ -76,17 +76,25 @@ half, channels 4..7 occupy the high half, and companion channels differ by 4.
 - trim/offset paired DAC writes for single channel, whole AFE, or all AFEs;
 - VBIAS DAC write plus `biasEnable`;
 - AFE reset and power-state bits;
+- applying the current RPU `ConfigureFrontend` sequence for AFE/channel slow
+  controls;
 - bounded spin waits on the AFE and DAC busy bits.
 
 It intentionally returns `Unsupported` for:
 
 - alignment;
-- applying full `ConfigureFrontend`.
 
-Those operations require the alignment register contract and full frontend
-configuration mapping to be ported before they can be safely enabled.
+Alignment requires the frontend register contract to be ported before it can be
+safely enabled.
 
 The AFE function dictionary is ported from `defines.hpp` into
 `daphne-sc-core/src/afe_functions.rs`. The Rust implementation preserves the
 legacy names and option/range validation, but rejects malformed bitfields before
 issuing MMIO writes.
+
+`ConfigureFrontend` follows the current RPU wire ABI: staged channel records
+program trim/offset DACs, `bias_control` programs VBIAS and enables bias,
+staged AFE records program attenuation/bias DACs and the explicit ADC/PGA/LNA
+AFE functions used by the legacy server configure path, plus `PGA_GAIN_CONTROL`
+from the current protobuf/RPU ABI. Trigger thresholds and other non-AFE fields
+are not in the RPU wire sequence yet.

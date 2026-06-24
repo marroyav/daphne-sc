@@ -219,6 +219,117 @@ impl<I: RegisterIo> AfeMmioBackend<I> {
         };
         Ok(u32::from(halves[usize::from(afe_channel)] & 0x0FFF))
     }
+
+    fn apply_staged_channel(
+        &mut self,
+        config: RpuWireChannelConfig,
+    ) -> Result<(), MmioAfeError<I::Error>> {
+        let trim = require_12bit(u32::from(config.trim))?;
+        let offset = require_12bit(u32::from(config.offset))?;
+
+        self.write_trim_or_offset_channel(
+            RpuWireOp::SetTrim,
+            config.afe_pl,
+            config.afe_channel,
+            trim,
+            false,
+        )?;
+        self.write_trim_or_offset_channel(
+            RpuWireOp::SetOffset,
+            config.afe_pl,
+            config.afe_channel,
+            offset,
+            false,
+        )
+    }
+
+    fn apply_staged_afe(&mut self, config: RpuWireAfeConfig) -> Result<(), MmioAfeError<I::Error>> {
+        let attenuation = require_12bit(u32::from(config.attenuation))?;
+        let attenuation_route = AFE_GAIN_DAC_ROUTES[usize::from(config.afe_pl)];
+        self.write_dac_route(attenuation_route, attenuation)?;
+        self.attenuation[usize::from(config.afe_pl)] = attenuation;
+
+        if config.bias != 0 {
+            let bias = require_12bit(u32::from(config.bias))?;
+            let bias_route = AFE_BIAS_DAC_ROUTES[usize::from(config.afe_pl)];
+            self.write_dac_route(bias_route, bias)?;
+            self.bias[usize::from(config.afe_pl)] = bias;
+        }
+
+        self.write_afe_function(config.afe_pl, "SERIALIZED_DATA_RATE", 1)?;
+        self.write_afe_function(
+            config.afe_pl,
+            "ADC_RESOLUTION_RESET",
+            u16::from(config.adc.resolution),
+        )?;
+        self.write_afe_function(
+            config.afe_pl,
+            "ADC_OUTPUT_FORMAT",
+            u16::from(config.adc.output_format),
+        )?;
+        self.write_afe_function(
+            config.afe_pl,
+            "LSB_MSB_FIRST",
+            u16::from(config.adc.msb_first),
+        )?;
+
+        self.write_afe_function(
+            config.afe_pl,
+            "LPF_PROGRAMMABILITY",
+            u16::from(config.pga.lpf_cut_frequency),
+        )?;
+        self.write_afe_function(
+            config.afe_pl,
+            "PGA_INTEGRATOR_DISABLE",
+            u16::from(config.pga.integrator_disable),
+        )?;
+        self.write_afe_function(
+            config.afe_pl,
+            "PGA_GAIN_CONTROL",
+            u16::from(config.pga.gain),
+        )?;
+        self.write_afe_function(config.afe_pl, "PGA_CLAMP_LEVEL", 2)?;
+        self.write_afe_function(config.afe_pl, "ACTIVE_TERMINATION_ENABLE", 0)?;
+
+        self.write_afe_function(
+            config.afe_pl,
+            "LNA_INPUT_CLAMP_SETTING",
+            u16::from(config.lna.clamp),
+        )?;
+        self.write_afe_function(config.afe_pl, "LNA_GAIN", u16::from(config.lna.gain))?;
+        self.write_afe_function(
+            config.afe_pl,
+            "LNA_INTEGRATOR_DISABLE",
+            u16::from(config.lna.integrator_disable),
+        )?;
+
+        Ok(())
+    }
+
+    fn write_afe_function(
+        &mut self,
+        afe_pl: u8,
+        name: &str,
+        value: u16,
+    ) -> Result<u32, MmioAfeError<I::Error>> {
+        validate_afe(afe_pl)?;
+        let spec =
+            validate_afe_function_value(name, value).map_err(|err| function_error(err, value))?;
+        spec.field
+            .mask()
+            .map_err(|err| function_error(err, value))?;
+
+        let current = self.read_register(afe_pl, spec.field.register)? as u16;
+        let updated = replace_afe_function_bits(current, spec.field, value)
+            .map_err(|err| function_error(err, value))?;
+
+        self.write_register(afe_pl, spec.field.register, u32::from(updated))?;
+
+        let readback = self.read_register(afe_pl, spec.field.register)? as u16;
+        extract_afe_function_bits(readback, spec.field)
+            .map(u32::from)
+            .map_err(|err| function_error(err, value))
+    }
 }
 
 impl<I: RegisterIo> AfeHardware for AfeMmioBackend<I> {
@@ -399,28 +510,29 @@ impl<I: RegisterIo> AfeHardware for AfeMmioBackend<I> {
         if !self.staged_config.active {
             return Err(MmioAfeError::Unsupported);
         }
+        self.staged_config.validate_counts()?;
+        let staged = self.staged_config;
+
+        self.do_reset()?;
+        self.set_power_state(true)?;
+
+        for config in staged.channels.iter().flatten().copied() {
+            self.apply_staged_channel(config)?;
+        }
+
+        self.write_vbias_control(u32::from(staged.counts.bias_control), true)?;
+
+        for config in staged.afes.iter().flatten().copied() {
+            self.apply_staged_afe(config)?;
+        }
+
+        self.set_power_state(true)?;
         self.staged_config = StagedConfig::default();
-        Err(MmioAfeError::Unsupported)
+        Ok(())
     }
 
     fn write_function(&mut self, afe_pl: u8, name: &str, value: u16) -> Result<u32, Self::Error> {
-        validate_afe(afe_pl)?;
-        let spec =
-            validate_afe_function_value(name, value).map_err(|err| function_error(err, value))?;
-        spec.field
-            .mask()
-            .map_err(|err| function_error(err, value))?;
-
-        let current = self.read_register(afe_pl, spec.field.register)? as u16;
-        let updated = replace_afe_function_bits(current, spec.field, value)
-            .map_err(|err| function_error(err, value))?;
-
-        self.write_register(afe_pl, spec.field.register, u32::from(updated))?;
-
-        let readback = self.read_register(afe_pl, spec.field.register)? as u16;
-        extract_afe_function_bits(readback, spec.field)
-            .map(u32::from)
-            .map_err(|err| function_error(err, value))
+        self.write_afe_function(afe_pl, name, value)
     }
 }
 
@@ -457,7 +569,7 @@ impl RegisterIo for VolatileRegisterIo {
 #[derive(Clone, Copy)]
 struct StagedConfig {
     active: bool,
-    _counts: RpuWireConfigCounts,
+    counts: RpuWireConfigCounts,
     afes: [Option<RpuWireAfeConfig>; AFE_COUNT as usize],
     channels: [Option<RpuWireChannelConfig>; CHANNEL_COUNT as usize],
 }
@@ -466,10 +578,28 @@ impl StagedConfig {
     const fn new(counts: RpuWireConfigCounts) -> Self {
         Self {
             active: true,
-            _counts: counts,
+            counts,
             afes: [None; AFE_COUNT as usize],
             channels: [None; CHANNEL_COUNT as usize],
         }
+    }
+
+    fn validate_counts<E>(&self) -> Result<(), MmioAfeError<E>> {
+        if self.received_afes() == self.counts.afe_count
+            && self.received_channels() == self.counts.channel_count
+        {
+            Ok(())
+        } else {
+            Err(MmioAfeError::Unsupported)
+        }
+    }
+
+    fn received_afes(&self) -> u16 {
+        self.afes.iter().flatten().count() as u16
+    }
+
+    fn received_channels(&self) -> u16 {
+        self.channels.iter().flatten().count() as u16
     }
 }
 
@@ -477,7 +607,7 @@ impl Default for StagedConfig {
     fn default() -> Self {
         Self {
             active: false,
-            _counts: RpuWireConfigCounts {
+            counts: RpuWireConfigCounts {
                 afe_count: 0,
                 channel_count: 0,
                 bias_control: 0,
@@ -528,6 +658,7 @@ fn bits(value: u32, start: u8, end: u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daphne_sc_core::afe::{AdcConfig, LnaConfig, PgaConfig};
     use std::collections::BTreeMap;
     use std::vec::Vec;
 
@@ -651,11 +782,11 @@ mod tests {
     }
 
     #[test]
-    fn full_config_apply_is_explicitly_unsupported_for_now() {
+    fn config_apply_rejects_incomplete_staged_counts_before_mmio() {
         let mut backend = AfeMmioBackend::new(FakeIo::default());
         backend
             .begin_configure_frontend(RpuWireConfigCounts {
-                afe_count: 0,
+                afe_count: 1,
                 channel_count: 0,
                 bias_control: 0,
             })
@@ -664,6 +795,79 @@ mod tests {
         let err = backend.apply_configure_frontend().unwrap_err();
 
         assert!(matches!(err, MmioAfeError::Unsupported));
+        assert!(backend.io_mut().writes.is_empty());
+    }
+
+    #[test]
+    fn full_config_apply_programs_staged_frontend_controls() {
+        let mut backend = AfeMmioBackend::new(FakeIo::default());
+        backend
+            .begin_configure_frontend(RpuWireConfigCounts {
+                afe_count: 1,
+                channel_count: 1,
+                bias_control: 0x0666,
+            })
+            .unwrap();
+        backend
+            .configure_channel(RpuWireChannelConfig {
+                channel: 10,
+                afe_board: 1,
+                afe_pl: 4,
+                afe_channel: 2,
+                trim: 0x00AA,
+                offset: 0x00BB,
+                gain: 0,
+            })
+            .unwrap();
+        backend
+            .configure_afe(RpuWireAfeConfig {
+                afe_board: 1,
+                afe_pl: 4,
+                attenuation: 0x0555,
+                bias: 0x0444,
+                adc: AdcConfig {
+                    resolution: true,
+                    output_format: false,
+                    msb_first: true,
+                },
+                pga: PgaConfig {
+                    lpf_cut_frequency: 3,
+                    integrator_disable: true,
+                    gain: true,
+                },
+                lna: LnaConfig {
+                    clamp: 2,
+                    gain: 3,
+                    integrator_disable: true,
+                },
+            })
+            .unwrap();
+
+        backend.apply_configure_frontend().unwrap();
+
+        let writes = backend.io_mut().writes.as_slice();
+        assert!(writes.contains(&(0x38, 0x0000_80AA)));
+        assert!(writes.contains(&(0x3C, 0x0000_80BB)));
+        assert!(writes.contains(&(
+            dac_gain_bias_offset(VBIAS_DAC_ROUTE.chip),
+            dac_gain_bias_word(VBIAS_DAC_ROUTE, 0x0666)
+        )));
+        assert!(writes.contains(&(BIAS_ENABLE_OFFSET, 1)));
+        assert!(writes.contains(&(
+            dac_gain_bias_offset(AFE_GAIN_DAC_ROUTES[4].chip),
+            dac_gain_bias_word(AFE_GAIN_DAC_ROUTES[4], 0x0555)
+        )));
+        assert!(writes.contains(&(
+            dac_gain_bias_offset(AFE_BIAS_DAC_ROUTES[4].chip),
+            dac_gain_bias_word(AFE_BIAS_DAC_ROUTES[4], 0x0444)
+        )));
+        assert!(writes.contains(&(0x34, afe_register_word(3, 0x2000))));
+        assert!(writes.contains(&(0x34, afe_register_word(51, 0x0006))));
+        assert!(writes.contains(&(0x34, afe_register_word(51, 0x2000))));
+        assert_eq!(
+            writes.last(),
+            Some(&(AFE_GLOBAL_CONTROL_OFFSET, 0x0000_0002))
+        );
     }
 
     #[test]
