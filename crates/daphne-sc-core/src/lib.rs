@@ -3,6 +3,7 @@
 extern crate alloc;
 
 pub mod afe;
+pub mod afe_functions;
 pub mod afe_hw;
 pub mod clockchip;
 pub mod rpu;

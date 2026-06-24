@@ -70,6 +70,7 @@ half, channels 4..7 occupy the high half, and companion channels differ by 4.
 `AfeMmioBackend` currently implements:
 
 - direct AFE register read/write sequence;
+- free-form AFE function writes through the legacy function dictionary;
 - gain/attenuation DAC writes;
 - bias DAC writes;
 - trim/offset paired DAC writes for single channel, whole AFE, or all AFEs;
@@ -80,8 +81,12 @@ half, channels 4..7 occupy the high half, and companion channels differ by 4.
 It intentionally returns `Unsupported` for:
 
 - alignment;
-- free-form AFE function writes;
 - applying full `ConfigureFrontend`.
 
-Those operations require the AFE function dictionary and alignment register
-contract to be ported before they can be safely enabled.
+Those operations require the alignment register contract and full frontend
+configuration mapping to be ported before they can be safely enabled.
+
+The AFE function dictionary is ported from `defines.hpp` into
+`daphne-sc-core/src/afe_functions.rs`. The Rust implementation preserves the
+legacy names and option/range validation, but rejects malformed bitfields before
+issuing MMIO writes.

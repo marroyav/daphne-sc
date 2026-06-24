@@ -1,5 +1,9 @@
 use crate::AfeHardware;
 use daphne_sc_core::afe::{AFE_COUNT, CHANNELS_PER_AFE, CHANNEL_COUNT};
+use daphne_sc_core::afe_functions::{
+    extract_afe_function_bits, replace_afe_function_bits, validate_afe_function_value,
+    AfeFunctionError,
+};
 use daphne_sc_core::afe_hw::{
     afe_control_offset, afe_dac_offset_offset, afe_dac_trim_offset, afe_register_address_word,
     afe_register_word, dac_channel_is_high_half, dac_companion_channel, dac_gain_bias_offset,
@@ -44,6 +48,8 @@ pub enum MmioAfeError<E> {
     InvalidAfe(u8),
     InvalidChannel(u8),
     InvalidValue(u32),
+    InvalidFunction,
+    InvalidFunctionField,
     Timeout,
     Unsupported,
 }
@@ -397,13 +403,24 @@ impl<I: RegisterIo> AfeHardware for AfeMmioBackend<I> {
         Err(MmioAfeError::Unsupported)
     }
 
-    fn write_function(
-        &mut self,
-        _afe_pl: u8,
-        _name: &str,
-        _value: u16,
-    ) -> Result<u32, Self::Error> {
-        Err(MmioAfeError::Unsupported)
+    fn write_function(&mut self, afe_pl: u8, name: &str, value: u16) -> Result<u32, Self::Error> {
+        validate_afe(afe_pl)?;
+        let spec =
+            validate_afe_function_value(name, value).map_err(|err| function_error(err, value))?;
+        spec.field
+            .mask()
+            .map_err(|err| function_error(err, value))?;
+
+        let current = self.read_register(afe_pl, spec.field.register)? as u16;
+        let updated = replace_afe_function_bits(current, spec.field, value)
+            .map_err(|err| function_error(err, value))?;
+
+        self.write_register(afe_pl, spec.field.register, u32::from(updated))?;
+
+        let readback = self.read_register(afe_pl, spec.field.register)? as u16;
+        extract_afe_function_bits(readback, spec.field)
+            .map(u32::from)
+            .map_err(|err| function_error(err, value))
     }
 }
 
@@ -488,6 +505,14 @@ fn require_12bit<E>(value: u32) -> Result<u16, MmioAfeError<E>> {
         Ok(value as u16)
     } else {
         Err(MmioAfeError::InvalidValue(value))
+    }
+}
+
+fn function_error<E>(err: AfeFunctionError, value: u16) -> MmioAfeError<E> {
+    match err {
+        AfeFunctionError::UnknownName => MmioAfeError::InvalidFunction,
+        AfeFunctionError::InvalidValue => MmioAfeError::InvalidValue(u32::from(value)),
+        AfeFunctionError::InvalidBitField => MmioAfeError::InvalidFunctionField,
     }
 }
 
@@ -639,5 +664,57 @@ mod tests {
         let err = backend.apply_configure_frontend().unwrap_err();
 
         assert!(matches!(err, MmioAfeError::Unsupported));
+    }
+
+    #[test]
+    fn write_function_uses_legacy_read_modify_write_sequence() {
+        let fake = FakeIo::default()
+            .with_read(0x04, 0xFFFF)
+            .with_read(0x04, 0xFFF9)
+            .with_read(0x04, 0xFFF9);
+        let mut backend = AfeMmioBackend::new(fake);
+
+        let readback = backend.write_function(0, "LPF_PROGRAMMABILITY", 4).unwrap();
+
+        assert_eq!(readback, 4);
+        assert_eq!(
+            backend.io_mut().writes.as_slice(),
+            &[
+                (0x04, AFE_SPI_TRIGGER_WORD),
+                (0x04, 0x0033_0000),
+                (0x04, AFE_SPI_IDLE_WORD),
+                (0x04, 0x0033_FFF9),
+                (0x04, AFE_SPI_TRIGGER_WORD),
+                (0x04, 0x0033_0000),
+                (0x04, AFE_SPI_IDLE_WORD),
+                (0x04, AFE_SPI_TRIGGER_WORD),
+                (0x04, 0x0033_0000),
+                (0x04, AFE_SPI_IDLE_WORD),
+            ]
+        );
+    }
+
+    #[test]
+    fn write_function_rejects_invalid_option_before_mmio() {
+        let mut backend = AfeMmioBackend::new(FakeIo::default());
+
+        let err = backend
+            .write_function(0, "LPF_PROGRAMMABILITY", 1)
+            .unwrap_err();
+
+        assert!(matches!(err, MmioAfeError::InvalidValue(1)));
+        assert!(backend.io_mut().writes.is_empty());
+    }
+
+    #[test]
+    fn write_function_rejects_malformed_legacy_bitfield() {
+        let mut backend = AfeMmioBackend::new(FakeIo::default().with_read(0x04, 0));
+
+        let err = backend
+            .write_function(0, "LVDS_OUTPUT_RATE_2X", 1)
+            .unwrap_err();
+
+        assert!(matches!(err, MmioAfeError::InvalidFunctionField));
+        assert!(backend.io_mut().writes.is_empty());
     }
 }
