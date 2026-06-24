@@ -1,0 +1,347 @@
+syntax = "proto3";
+package daphne;
+
+// ----------------------------------------------------------------------------
+// Canonical low-level AFE/FPGA control schema
+// ----------------------------------------------------------------------------
+
+// ------------------------ Write primitives ------------------------
+
+message cmd_writeAFEReg {
+  int32  id         = 1;
+  uint32 afeBlock   = 2;
+  uint32 regAddress = 3;
+  uint32 regValue   = 4;
+}
+message cmd_writeAFEReg_response {
+  bool   success    = 1;
+  string message    = 2;
+  uint32 afeBlock   = 3;
+  uint32 regAddress = 4;
+  uint32 regValue   = 5;
+}
+
+message cmd_writeAFEVGAIN {
+  int32  id         = 1;
+  uint32 afeBlock   = 2;
+  uint32 vgainValue = 3;
+}
+message cmd_writeAFEVGAIN_response {
+  bool   success    = 1;
+  string message    = 2;
+  uint32 afeBlock   = 3;
+  uint32 vgainValue = 4;
+}
+
+message cmd_writeAFEAttenuation {
+  int32  id          = 1;
+  uint32 afeBlock    = 2;
+  uint32 attenuation = 3;
+}
+message cmd_writeAFEAttenuation_response {
+  bool   success     = 1;
+  string message     = 2;
+  uint32 afeBlock    = 3;
+  uint32 attenuation = 4;
+}
+
+message cmd_writeAFEBiasSet {
+  int32  id        = 1;
+  uint32 afeBlock  = 2;
+  uint32 biasValue = 3;
+}
+message cmd_writeAFEBiasSet_response {
+  bool   success   = 1;
+  string message   = 2;
+  uint32 afeBlock  = 3;
+  uint32 biasValue = 4;
+}
+
+// TRIM
+message cmd_writeTRIM_allChannels {
+  int32  id        = 1;
+  uint32 trimValue = 2;
+  bool   trimGain  = 3;
+}
+message cmd_writeTRIM_allChannels_response {
+  bool   success   = 1;
+  string message   = 2;
+  uint32 trimValue = 3;
+  bool   trimGain  = 4;
+}
+
+message cmd_writeTrim_allAFE {
+  int32  id        = 1;
+  uint32 afeBlock  = 2;
+  uint32 trimValue = 3;
+  bool   trimGain  = 4;
+}
+message cmd_writeTrim_allAFE_response {
+  bool   success   = 1;
+  string message   = 2;
+  uint32 afeBlock  = 3;
+  uint32 trimValue = 4;
+  bool   trimGain  = 5;
+}
+
+message cmd_writeTrim_singleChannel {
+  int32  id          = 1;
+  uint32 trimChannel = 2;
+  uint32 trimValue   = 3;
+  bool   trimGain    = 4;
+}
+message cmd_writeTrim_singleChannel_response {
+  bool   success     = 1;
+  string message     = 2;
+  uint32 trimChannel = 3;
+  uint32 trimValue   = 4;
+  bool   trimGain    = 5;
+}
+
+// OFFSET
+message cmd_writeOFFSET_allChannels {
+  int32  id          = 1;
+  uint32 offsetValue = 2;
+  bool   offsetGain  = 3;
+}
+message cmd_writeOFFSET_allChannels_response {
+  bool   success     = 1;
+  string message     = 2;
+  uint32 offsetValue = 3;
+  bool   offsetGain  = 4;
+}
+
+message cmd_writeOFFSET_allAFE {
+  int32  id          = 1;
+  uint32 afeBlock    = 2;
+  uint32 offsetValue = 3;
+  bool   offsetGain  = 4;
+}
+message cmd_writeOFFSET_allAFE_response {
+  bool   success     = 1;
+  string message     = 2;
+  uint32 afeBlock    = 3;
+  uint32 offsetValue = 4;
+  bool   offsetGain  = 5;
+}
+
+message cmd_writeOFFSET_singleChannel {
+  int32  id            = 1;
+  uint32 offsetChannel = 2;
+  uint32 offsetValue   = 3;
+  bool   offsetGain    = 4;
+}
+message cmd_writeOFFSET_singleChannel_response {
+  bool   success       = 1;
+  string message       = 2;
+  uint32 offsetChannel = 3;
+  uint32 offsetValue   = 4;
+  bool   offsetGain    = 5;
+}
+
+message cmd_writeVbiasControl {
+  int32  id                = 1;
+  uint32 vBiasControlValue = 2;
+  bool   enable            = 3;
+}
+message cmd_writeVbiasControl_response {
+  bool   success           = 1;
+  string message           = 2;
+  uint32 vBiasControlValue = 3;
+}
+
+// ------------------------ Read primitives ------------------------
+
+message cmd_readAFEReg {
+  int32  id        = 1;
+  uint32 afeBlock  = 2;
+  uint32 regAddress= 3;
+}
+message cmd_readAFEReg_response {
+  bool   success   = 1;
+  string message   = 2;
+  uint32 afeBlock  = 3;
+  uint32 regAddress= 4;
+  uint32 regValue  = 5;
+}
+
+message cmd_readAFEVgain {
+  int32  id       = 1;
+  uint32 afeBlock = 2;
+}
+message cmd_readAFEVgain_response {
+  bool   success   = 1;
+  string message   = 2;
+  uint32 afeBlock  = 3;
+  uint32 vgainValue= 4;
+}
+
+message cmd_readAFEBiasSet {
+  int32  id       = 1;
+  uint32 afeBlock = 2;
+}
+message cmd_readAFEBiasSet_response {
+  bool   success   = 1;
+  string message   = 2;
+  uint32 afeBlock  = 3;
+  uint32 biasValue = 4;
+}
+
+message cmd_readTrim_allChannels {
+  int32 id = 1;
+}
+message cmd_readTrim_allChannels_response {
+  bool           success    = 1;
+  string         message    = 2;
+  repeated uint32 trimValues= 3;
+}
+
+message cmd_readTrim_allAFE {
+  int32  id       = 1;
+  uint32 afeBlock = 2;
+}
+message cmd_readTrim_allAFE_response {
+  bool           success    = 1;
+  string         message    = 2;
+  uint32         afeBlock   = 3;
+  repeated uint32 trimValues= 4;
+}
+
+message cmd_readTrim_singleChannel {
+  int32  id          = 1;
+  uint32 trimChannel = 2;
+}
+message cmd_readTrim_singleChannel_response {
+  bool   success     = 1;
+  string message     = 2;
+  uint32 trimChannel = 3;
+  uint32 trimValue   = 4;
+}
+
+message cmd_readOffset_allChannels {
+  int32 id = 1;
+}
+message cmd_readOffset_allChannels_response {
+  bool           success      = 1;
+  string         message      = 2;
+  repeated uint32 offsetValues= 3;
+}
+
+message cmd_readOffset_allAFE {
+  int32  id       = 1;
+  uint32 afeBlock = 2;
+}
+message cmd_readOffset_allAFE_response {
+  bool           success       = 1;
+  string         message       = 2;
+  uint32         afeBlock      = 3;
+  repeated uint32 offsetValues = 4;
+}
+
+message cmd_readOffset_singleChannel {
+  int32  id            = 1;
+  uint32 offsetChannel = 2;
+}
+message cmd_readOffset_singleChannel_response {
+  bool   success       = 1;
+  string message       = 2;
+  uint32 offsetChannel = 3;
+  uint32 offsetValue   = 4;
+}
+
+message cmd_readVbiasControl {
+  int32 id = 1;
+}
+message cmd_readVbiasControl_response {
+  bool   success           = 1;
+  string message           = 2;
+  uint32 vBiasControlValue = 3;
+}
+
+message cmd_readCurrentMonitor {
+  int32  id                   = 1;
+  uint32 currentMonitorChannel= 2;
+}
+message cmd_readCurrentMonitor_response {
+  bool   success              = 1;
+  string message              = 2;
+  uint32 currentMonitorChannel= 3;
+  uint32 currentValue         = 4;
+}
+
+message cmd_readBiasVoltageMonitor {
+  int32  id       = 1;
+  uint32 afeBlock = 2;
+}
+message cmd_readBiasVoltageMonitor_response {
+  bool   success          = 1;
+  string message          = 2;
+  uint32 afeBlock         = 3;
+  uint32 biasVoltageValue = 4;
+}
+
+// ------------------------ AFE control helpers ------------------------
+
+message cmd_setAFEReset {
+  int32 id        = 1;
+  bool  resetValue= 2;
+}
+message cmd_setAFEReset_response {
+  bool success    = 1;
+  string message  = 2;
+  bool  resetValue= 3;
+}
+
+message cmd_doAFEReset {
+  int32 id = 1;
+}
+message cmd_doAFEReset_response {
+  bool success   = 1;
+  string message = 2;
+}
+
+message cmd_setAFEPowerState {
+  int32 id        = 1;
+  bool  powerState= 2;
+}
+message cmd_setAFEPowerState_response {
+  bool   success   = 1;
+  string message   = 2;
+  uint32 powerState= 3;
+}
+
+// --- AFE alignment ---------------------------------------------------
+message cmd_alignAFEs {}
+message cmd_alignAFEs_response {
+  bool success = 1;
+  repeated uint32 delay   = 2;
+  repeated uint32 bitslip = 3;
+  string message = 4;
+}
+
+// --- AFE function write ----------------------------------------------
+message cmd_writeAFEFunction {
+  uint32 afeBlock    = 1;   // 0..4 (board index, your server maps to PL)
+  string function    = 2;   // e.g. "LPF_PROGRAMMABILITY"
+  uint32 configValue = 3;   // hardware code/value
+}
+message cmd_writeAFEFunction_response {
+  bool   success     = 1;
+  string message     = 2;
+  uint32 afeBlock    = 3;
+  string function    = 4;
+  uint32 configValue = 5;
+}
+
+// --- Software trigger -------------------------------------------------
+message cmd_doSoftwareTrigger {}
+message cmd_doSoftwareTrigger_response {
+  bool   success = 1;
+  string message = 2;
+}
+
+// Legacy DAQ status container kept for compatibility (unused by ZMQ client)
+message Status {
+  bool  success = 1;
+  bytes extra   = 2;
+}

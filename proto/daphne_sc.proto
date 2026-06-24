@@ -1,0 +1,179 @@
+syntax = "proto3";
+package daphne.sc;
+
+// Additive messages for the Rust slow-control service.
+// Existing daphne.MessageTypeV2 values remain the compatibility API.
+
+message SlowControlStatusRequest {
+  uint32 level = 1;
+}
+
+message SlowControlStatusResponse {
+  bool success = 1;
+  string message = 2;
+  FirmwareStatus firmware = 3;
+  RpuStatus rpu = 4;
+  repeated I2CBusStatus i2c = 5;
+  ClockStatus clocks = 6;
+  repeated TemperatureReading temperatures = 7;
+  repeated RailReading rails = 8;
+  repeated ServiceStatus services = 9;
+  repeated string errors = 10;
+}
+
+message FirmwareStatus {
+  bool loaded = 1;
+  string fpga_manager_state = 2;
+  string overlay_name = 3;
+  string build_id = 4;
+  repeated string pl_devices_present = 5;
+}
+
+message RpuStatus {
+  bool available = 1;
+  bool running = 2;
+  string firmware = 3;
+  uint64 heartbeat = 4;
+  string last_fault = 5;
+}
+
+message I2CBusStatus {
+  uint32 bus = 1;
+  string path = 2;
+  repeated I2CDeviceStatus devices = 3;
+}
+
+message I2CDeviceStatus {
+  uint32 address = 1;
+  string name = 2;
+  bool present = 3;
+  string status = 4;
+}
+
+message ClockStatus {
+  bool endpoint_clock_source_controlled = 1;
+  bool mmcm0_locked = 2;
+  bool mmcm1_locked = 3;
+  uint32 raw_endpoint_status = 4;
+}
+
+message TemperatureReading {
+  string name = 1;
+  double celsius = 2;
+}
+
+message RailReading {
+  string name = 1;
+  double voltage_v = 2;
+  double current_a = 3;
+  double power_w = 4;
+  string status = 5;
+}
+
+message ServiceStatus {
+  string name = 1;
+  bool active = 2;
+  string state = 3;
+}
+
+message RpuAfeCommand {
+  uint64 sequence = 1;
+  oneof command {
+    AfeRegisterWrite write_register = 10;
+    AfeScalarWrite set_attenuation = 11;
+    AfeScalarWrite set_bias = 12;
+    ChannelScalarWrite set_trim = 13;
+    ChannelScalarWrite set_offset = 14;
+    VbiasControl set_vbias_control = 15;
+    AfeReset set_reset = 16;
+    AfeReset do_reset = 17;
+    AfePowerState set_power_state = 18;
+    AfeFunctionWrite write_function = 19;
+    ConfigureFrontend configure_frontend = 20;
+    AlignAfe align = 21;
+  }
+}
+
+message RpuAfeReply {
+  uint64 sequence = 1;
+  bool accepted = 2;
+  bool applied = 3;
+  uint32 readback = 4;
+  string message = 5;
+}
+
+message AfeRegisterWrite {
+  uint32 afe_board = 1;
+  uint32 register = 2;
+  uint32 value = 3;
+}
+
+message AfeScalarWrite {
+  uint32 afe_board = 1;
+  uint32 value = 2;
+}
+
+message ChannelScalarWrite {
+  enum Target {
+    TARGET_UNSPECIFIED = 0;
+    TARGET_ONE_CHANNEL = 1;
+    TARGET_ONE_AFE = 2;
+    TARGET_ALL_CHANNELS = 3;
+  }
+
+  Target target = 1;
+  uint32 channel = 2;
+  uint32 afe_board = 3;
+  uint32 value = 4;
+  bool gain = 5;
+}
+
+message VbiasControl {
+  uint32 value = 1;
+  bool enable = 2;
+}
+
+message AfeReset {
+  bool asserted = 1;
+}
+
+message AfePowerState {
+  bool enabled = 1;
+}
+
+message AfeFunctionWrite {
+  uint32 afe_board = 1;
+  string function = 2;
+  uint32 value = 3;
+}
+
+message ConfigureFrontend {
+  repeated AfeFrontendConfig afes = 1;
+  repeated ChannelFrontendConfig channels = 2;
+  uint32 bias_control = 3;
+}
+
+message AfeFrontendConfig {
+  uint32 afe_board = 1;
+  uint32 attenuation = 2;
+  uint32 bias = 3;
+  bool adc_resolution = 4;
+  bool adc_output_format = 5;
+  bool adc_msb_first = 6;
+  uint32 pga_lpf_cut_frequency = 7;
+  bool pga_integrator_disable = 8;
+  bool pga_gain = 9;
+  uint32 lna_clamp = 10;
+  uint32 lna_gain = 11;
+  bool lna_integrator_disable = 12;
+}
+
+message ChannelFrontendConfig {
+  uint32 channel = 1;
+  uint32 trim = 2;
+  uint32 offset = 3;
+  uint32 gain = 4;
+}
+
+message AlignAfe {}
+

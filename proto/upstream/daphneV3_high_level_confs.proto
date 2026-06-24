@@ -1,0 +1,303 @@
+syntax = "proto3";
+package daphne;
+
+
+// ----------------- Clock / basic control -----------------
+
+message ConfigureCLKsRequest {
+  uint32 id           = 1;
+  bool   ctrl_ep_clk  = 2;
+  bool   reset_MMCM1  = 3;
+  bool   reset_endpoint = 4;
+}
+message ConfigureCLKsResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+// ----------------- Configure FE -----------------
+
+message ChannelConfig  { uint32 id=1; uint32 trim=2; uint32 offset=3; uint32 gain=4; }
+
+// Note: using 'attenuators' (ZMQ naming) and keeping v_bias; DAQ had v_gain earlier.
+// v_gain belongs in PGA/LNA; for V3 we keep per-AFE 'attenuators'.
+message AFEConfig {
+  uint32   id           = 1;
+  uint32   attenuators  = 2;  // ZMQ name preserved
+  uint32   v_bias       = 3;
+  ADCConfig adc         = 4;
+  PGAConfig pga         = 5;
+  LNAConfig lna         = 6;
+}
+
+message ADCConfig      { bool resolution=1; bool output_format=2; bool sb_first=3; }
+message PGAConfig      { uint32 lpf_cut_frequency=1; bool integrator_disable=2; bool gain=3; }
+message LNAConfig      { uint32 clamp=1; uint32 gain=2; bool integrator_disable=3; }
+
+message ConfigureRequest {
+  string  daphne_address         = 1;
+  uint32  slot                   = 2;
+  uint32  timeout_ms             = 3;
+  uint32  biasctrl               = 4;
+
+  // Unify on uint64 to match daphnemodules and avoid narrowing on DAQ side.
+  uint64  self_trigger_threshold = 5;
+  uint64  self_trigger_xcorr     = 6;
+  uint64  tp_conf                = 7;
+  uint64  compensator            = 8;
+  uint64  inverters              = 9;
+
+  repeated ChannelConfig channels = 10;
+  repeated AFEConfig     afes     = 11;
+
+  // Present in ZMQ; keep it so both sides can filter FS channels consistently
+  repeated uint32 full_stream_channels = 12;
+}
+message ConfigureResponse { bool success = 1; string message = 2; }
+
+// ----------------- Scrap -----------------
+
+message ScrapRequest  {}
+message ScrapResponse { bool success = 1; string message = 2; }
+
+// ----------------- Spybuffer dump (ZMQ style) -----------------
+
+message DumpSpyBuffersRequest {
+  repeated uint32 channelList       = 1;
+  uint32          numberOfSamples   = 2;
+  uint32          numberOfWaveforms = 3;
+  bool            softwareTrigger   = 4;
+}
+message DumpSpyBuffersResponse {
+  bool            success           = 1;
+  repeated uint32 channelList       = 2;
+  uint32          numberOfSamples   = 3;
+  uint32          numberOfWaveforms = 4;
+  bool            softwareTrigger   = 5;
+  repeated uint32 data              = 6 [packed = true];
+  string          message           = 7;
+}
+
+// Chunked variant (for large transfers)
+message DumpSpyBuffersChunkRequest {
+  repeated uint32 channelList       = 1;
+  uint32          numberOfSamples   = 2;
+  uint32          numberOfWaveforms = 3;
+  bool            softwareTrigger   = 4;
+  string          requestID         = 5;
+  uint32          chunkSize         = 6;
+}
+message DumpSpyBuffersChunkResponse {
+  bool            success             = 1;
+  string          requestID           = 2;
+  uint32          chunkseq            = 3;
+  bool            isFinal             = 4;
+  uint32          waveformStart       = 5;
+  uint32          waveformCount       = 6;
+  uint32          requestTotalWaveforms = 7;
+  uint32          numberOfSamples     = 8;
+  repeated uint32 channelList         = 9;
+  repeated uint32 data                = 10;
+  string          message             = 11;
+}
+
+// ----------------- Info -----------------
+
+message InfoRequest { uint32 level = 1; }
+
+message StreamInfo {
+  uint64 total_packets         = 1;
+  uint64 new_packets           = 2;
+  uint64 total_dropped_packets = 3;
+  uint64 new_dropped_packets   = 4;
+}
+message ChannelInfo {
+  uint32 id             = 1;
+  uint64 total_triggers = 2;
+  uint64 new_triggers   = 3;
+  uint64 total_packets  = 4;
+  uint64 new_packets    = 5;
+}
+message GeneralInfo {
+  double v_bias_0       = 1;
+  double v_bias_1       = 2;
+  double v_bias_2       = 3;
+  double v_bias_3       = 4;
+  double v_bias_4       = 5;
+  double power_minus5v  = 6;
+  double power_plus2p5v = 7;
+  double power_ce       = 8;
+  double temperature    = 9;
+}
+message InfoResponse {
+  StreamInfo           stream_info  = 1;
+  repeated ChannelInfo channels     = 2;
+  GeneralInfo          general_info = 3;
+}
+
+message TriggerChannelSnapshot {
+  uint32 channel       = 1;   // 0..39
+  uint32 threshold     = 2;   // 10-bit
+  uint64 record_count  = 3;
+  uint64 busy_count    = 4;
+  uint64 full_count    = 5;
+}
+
+message ReadTriggerCountersRequest {
+  repeated uint32 channels = 1;   // optional; empty = all 0..39
+  uint32 base_addr         = 2;   // optional override, default 0xA0010000
+}
+
+message ReadTriggerCountersResponse {
+  bool success                                 = 1;
+  string message                               = 2;
+  repeated TriggerChannelSnapshot snapshots    = 3;
+}
+
+// --- Test register: always returns 0xDEADBEEF ---
+message TestRegRequest {}
+message TestRegResponse {
+  uint64 value   = 1;  // 0xDEADBEEF
+  string message = 2;  // optional "ok" text
+}
+
+
+// ----------------- Multi-register writes -----------------
+
+message WriteRegister { uint64 address = 1; uint64 value = 2; }
+message WriteMultipleRegisterRequest { repeated WriteRegister writes = 1; }
+message WriteRegisterResponse { bool success = 1; string message = 2; }
+
+// ----------------- Legacy envelope (deprecated) -----------------
+// Deprecated: use ControlEnvelopeV2 + MessageTypeV2.
+enum MessageType {
+  option deprecated = true;
+  UNKNOWN                 = 0;
+  CONFIGURE_CLKS          = 1;
+  CONFIGURE_FE            = 2;
+
+  // Legacy DAPHNE V2 commands
+  WRITE_AFE_REG           = 3;
+  WRITE_AFE_VGAIN         = 4;
+  WRITE_AFE_BIAS_SET      = 5;
+  WRITE_TRIM_ALL_CH       = 6;
+  WRITE_TRIM_ALL_AFE      = 7;
+  WRITE_TRIM_CH           = 8;
+  WRITE_OFFSET_ALL_CH     = 9;
+  WRITE_OFFSET_ALL_AFE    = 10;
+  WRITE_OFFSET_CH         = 11;
+  WRITE_VBIAS_CONTROL     = 12;
+  READ_AFE_REG            = 13;
+  READ_AFE_VGAIN          = 14;
+  READ_AFE_BIAS_SET       = 15;
+  READ_TRIM_ALL_CH        = 16;
+  READ_TRIM_ALL_AFE       = 17;
+  READ_TRIM_CH            = 18;
+  READ_OFFSET_ALL_CH      = 19;
+  READ_OFFSET_ALL_AFE     = 20;
+  READ_OFFSET_CH          = 21;
+  READ_VBIAS_CONTROL      = 22;
+  READ_CURRENT_MONITOR    = 23;
+  READ_BIAS_VOLTAGE_MONITOR = 24;
+  SET_AFE_RESET           = 25;
+  DO_AFE_RESET            = 26;
+  SET_AFE_POWERSTATE      = 27;
+
+  // DAPHNE V3 low-level add-ons
+  WRITE_AFE_ATTENUATION   = 28;
+  DUMP_SPYBUFFER          = 29;
+  ALIGN_AFE               = 30;
+  WRITE_AFE_FUNCTION      = 31;
+  DO_SOFTWARE_TRIGGER     = 32;
+
+  DUMP_SPYBUFFER_CHUNK    = 100;
+  READ_TEST_REG           = 264;
+}
+
+// ======================= Transport V2 (additive) ==========================
+// New transport is self-contained and doesn't disturb existing codes.
+
+enum Direction {
+  DIR_REQUEST  = 0;
+  DIR_RESPONSE = 1;
+  DIR_EVENT    = 2; // for async notifications
+}
+
+// Requests are EVEN, responses are ODD = (request + 1)
+// Start at a high range to avoid collisions with legacy MessageType.
+enum MessageTypeV2 {
+  MT2_UNSPECIFIED                    = 0;   // <-- required first entry
+  
+  // High-level
+  MT2_CONFIGURE_CLKS_REQ             = 200;
+  MT2_CONFIGURE_CLKS_RESP            = 201;
+  MT2_CONFIGURE_FE_REQ               = 202;
+  MT2_CONFIGURE_FE_RESP              = 203;
+
+  // Low-level writes/reads (mirrors of your cmd_* in daphne_control_low.proto)
+  MT2_WRITE_AFE_REG_REQ              = 204; MT2_WRITE_AFE_REG_RESP              = 205;
+  MT2_WRITE_AFE_VGAIN_REQ            = 206; MT2_WRITE_AFE_VGAIN_RESP            = 207;
+  MT2_WRITE_AFE_BIAS_SET_REQ         = 208; MT2_WRITE_AFE_BIAS_SET_RESP         = 209;
+  MT2_WRITE_TRIM_ALL_CH_REQ          = 210; MT2_WRITE_TRIM_ALL_CH_RESP          = 211;
+  MT2_WRITE_TRIM_ALL_AFE_REQ         = 212; MT2_WRITE_TRIM_ALL_AFE_RESP         = 213;
+  MT2_WRITE_TRIM_CH_REQ              = 214; MT2_WRITE_TRIM_CH_RESP              = 215;
+  MT2_WRITE_OFFSET_ALL_CH_REQ        = 216; MT2_WRITE_OFFSET_ALL_CH_RESP        = 217;
+  MT2_WRITE_OFFSET_ALL_AFE_REQ       = 218; MT2_WRITE_OFFSET_ALL_AFE_RESP       = 219;
+  MT2_WRITE_OFFSET_CH_REQ            = 220; MT2_WRITE_OFFSET_CH_RESP            = 221;
+  MT2_WRITE_VBIAS_CONTROL_REQ        = 222; MT2_WRITE_VBIAS_CONTROL_RESP        = 223;
+  MT2_READ_AFE_REG_REQ               = 224; MT2_READ_AFE_REG_RESP               = 225;
+  MT2_READ_AFE_VGAIN_REQ             = 226; MT2_READ_AFE_VGAIN_RESP             = 227;
+  MT2_READ_AFE_BIAS_SET_REQ          = 228; MT2_READ_AFE_BIAS_SET_RESP          = 229;
+  MT2_READ_TRIM_ALL_CH_REQ           = 230; MT2_READ_TRIM_ALL_CH_RESP           = 231;
+  MT2_READ_TRIM_ALL_AFE_REQ          = 232; MT2_READ_TRIM_ALL_AFE_RESP          = 233;
+  MT2_READ_TRIM_CH_REQ               = 234; MT2_READ_TRIM_CH_RESP               = 235;
+  MT2_READ_OFFSET_ALL_CH_REQ         = 236; MT2_READ_OFFSET_ALL_CH_RESP         = 237;
+  MT2_READ_OFFSET_ALL_AFE_REQ        = 238; MT2_READ_OFFSET_ALL_AFE_RESP        = 239;
+  MT2_READ_OFFSET_CH_REQ             = 240; MT2_READ_OFFSET_CH_RESP             = 241;
+  MT2_READ_VBIAS_CONTROL_REQ         = 242; MT2_READ_VBIAS_CONTROL_RESP         = 243;
+  MT2_READ_CURRENT_MONITOR_REQ       = 244; MT2_READ_CURRENT_MONITOR_RESP       = 245;
+  MT2_READ_BIAS_VOLTAGE_MONITOR_REQ  = 246; MT2_READ_BIAS_VOLTAGE_MONITOR_RESP  = 247;
+  MT2_SET_AFE_RESET_REQ              = 248; MT2_SET_AFE_RESET_RESP              = 249;
+  MT2_DO_AFE_RESET_REQ               = 250; MT2_DO_AFE_RESET_RESP               = 251;
+  MT2_SET_AFE_POWERSTATE_REQ         = 252; MT2_SET_AFE_POWERSTATE_RESP         = 253;
+
+  // V3 add-ons
+  MT2_WRITE_AFE_ATTENUATION_REQ      = 254; MT2_WRITE_AFE_ATTENUATION_RESP      = 255;
+  MT2_DUMP_SPYBUFFER_REQ             = 256; MT2_DUMP_SPYBUFFER_RESP             = 257;
+  MT2_ALIGN_AFE_REQ                  = 258; MT2_ALIGN_AFE_RESP                  = 259;
+  MT2_WRITE_AFE_FUNCTION_REQ         = 260; MT2_WRITE_AFE_FUNCTION_RESP         = 261;
+  MT2_DO_SOFTWARE_TRIGGER_REQ        = 262; MT2_DO_SOFTWARE_TRIGGER_RESP        = 263;
+
+  // Chunked dump (multi-message sequence keeps same task_id)
+  MT2_DUMP_SPYBUFFER_CHUNK_REQ       = 300; MT2_DUMP_SPYBUFFER_CHUNK_RESP       = 301;
+  MT2_READ_TEST_REG_REQ              = 304; MT2_READ_TEST_REG_RESP              = 305;
+
+  MT2_READ_TRIGGER_COUNTERS_REQ      = 320; MT2_READ_TRIGGER_COUNTERS_RESP      = 321; 
+
+  // System / monitoring
+  MT2_READ_GENERAL_INFO_REQ          = 322; MT2_READ_GENERAL_INFO_RESP          = 323;
+}
+
+message ControlEnvelopeV2 {
+  uint32         version       = 1; // set to 2
+  Direction      dir           = 2;
+  MessageTypeV2  type          = 3;
+  bytes          payload       = 4; // serialized cmd_* or Configure* message
+
+  // Correlation
+  uint64         task_id       = 10; // stable across a multi-step operation
+  uint64         msg_id        = 11; // unique per message from sender
+  uint64         correl_id     = 12; // response points to request's msg_id
+  string         route         = 13; // optional logical target, e.g. "mezz/0"
+
+  // Timing (optional, useful when debugging)
+  uint64         timestamp_ns  = 20;
+}
+
+
+
+message ControlEnvelope {
+  option deprecated = true;
+  MessageType type = 1;
+  bytes       payload = 2;
+}
