@@ -248,10 +248,12 @@ fn collect_rails(errors: &mut Vec<String>) -> Vec<RailReading> {
 }
 
 fn collect_service_statuses() -> Vec<ServiceStatus> {
-    SERVICES
+    let mut statuses = SERVICES
         .iter()
         .map(|service| service_status(service))
-        .collect()
+        .collect::<Vec<_>>();
+    statuses.extend(collect_remoteproc_statuses());
+    statuses
 }
 
 fn service_status(service: &str) -> ServiceStatus {
@@ -269,6 +271,39 @@ fn service_status(service: &str) -> ServiceStatus {
             .map(|output| output.status.success() && state == "active")
             .unwrap_or(false),
         state,
+    }
+}
+
+fn collect_remoteproc_statuses() -> Vec<ServiceStatus> {
+    let Ok(entries) = fs::read_dir("/sys/class/remoteproc") else {
+        return Vec::new();
+    };
+    let mut paths = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    paths.sort();
+
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?.to_string();
+            let state = read_trimmed(path.join("state")).unwrap_or_else(|| "unknown".to_string());
+            let firmware = read_trimmed(path.join("firmware"));
+            Some(ServiceStatus {
+                name: format!("remoteproc/{name}"),
+                active: state == "running",
+                state: remoteproc_state_detail(&state, firmware.as_deref()),
+            })
+        })
+        .collect()
+}
+
+fn remoteproc_state_detail(state: &str, firmware: Option<&str>) -> String {
+    if let Some(firmware) = firmware.filter(|firmware| !firmware.is_empty()) {
+        format!("{state}; firmware={firmware}")
+    } else {
+        state.to_string()
     }
 }
 
@@ -446,5 +481,14 @@ mod tests {
             parse_i2c_bus_from_detail("0x70 present on /dev/i2c-2; 0xE6=0x06"),
             Some(2)
         );
+    }
+
+    #[test]
+    fn formats_remoteproc_state_with_firmware_name() {
+        assert_eq!(
+            remoteproc_state_detail("running", Some("rpu-daphne-sc.elf")),
+            "running; firmware=rpu-daphne-sc.elf"
+        );
+        assert_eq!(remoteproc_state_detail("offline", None), "offline");
     }
 }

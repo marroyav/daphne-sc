@@ -15,9 +15,9 @@
   - overlay/build metadata.
   - expected PL device presence.
 - RPU status:
-  - `/sys/class/remoteproc/remoteproc*/state`
-  - firmware names
-  - heartbeat once RPU firmware provides one
+  - `/sys/class/remoteproc/remoteproc*/state` via service-style status entries
+  - firmware names via service-style status entries
+  - heartbeat once RPU firmware provides one through the RPU wire status frame
 - I2C status:
   - expected devices on `/dev/i2c-1` and `/dev/i2c-2`
   - PMBus health for board rails
@@ -58,8 +58,10 @@ Current Rust status:
 - Linux server can select an RPMsg-like transport with `--rpu-rpmsg PATH`.
 - Scalar AFE commands, bounded write-function commands, and staged
   configure-frontend sequences are encoded for the RPU.
-- The no-std RPU runtime scaffold rejects incomplete frontend config sequences
-  and still requires an interlock-ready state before any AFE command is staged.
+- The no-std RPU runtime rejects incomplete frontend config sequences and
+  requires an interlock-ready state before any AFE command is staged.
+- The MMIO backend now implements the AFE register/DAC/function/configure
+  sequence and frontend alignment contract in unit-tested form.
 
 ## Milestone 4: AFE Command Parity
 
