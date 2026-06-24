@@ -29,7 +29,7 @@ pub fn handle_payload<T: RpuAfeTransport>(
             let mut rejected = PreflightRejectedRpuTransport::new(preflight.failure_message());
             handle_rpu_afe(core_type, payload, &mut rejected)
         }
-        CommandRoute::LinuxStatus => handle_linux_status(core_type, payload),
+        CommandRoute::LinuxStatus => handle_linux_status(core_type, payload, rpu, preflight),
         CommandRoute::LinuxFpga | CommandRoute::Unsupported => handle_not_implemented(core_type),
     }
 }
@@ -97,7 +97,12 @@ fn handle_rpu_afe<T: RpuAfeTransport>(
     }
 }
 
-fn handle_linux_status(message_type: MessageTypeV2, payload: &[u8]) -> Vec<u8> {
+fn handle_linux_status<T: RpuAfeTransport>(
+    message_type: MessageTypeV2,
+    payload: &[u8],
+    rpu: &mut T,
+    preflight: &PreflightStatus,
+) -> Vec<u8> {
     match message_type {
         MessageTypeV2::ReadCurrentMonitorReq => {
             let req = match decode::<pb::CmdReadCurrentMonitor>(payload) {
@@ -136,8 +141,152 @@ fn handle_linux_status(message_type: MessageTypeV2, payload: &[u8]) -> Vec<u8> {
             })
         }
         MessageTypeV2::ReadGeneralInfoReq => v2::encode(pb::GeneralInfo::default()),
+        MessageTypeV2::ReadSlowControlStatusReq => {
+            handle_slow_control_status(payload, rpu, preflight)
+        }
         _ => Vec::new(),
     }
+}
+
+fn handle_slow_control_status<T: RpuAfeTransport>(
+    payload: &[u8],
+    rpu: &mut T,
+    preflight: &PreflightStatus,
+) -> Vec<u8> {
+    if let Err(err) = decode::<pb::sc::SlowControlStatusRequest>(payload) {
+        return v2::encode(pb::sc::SlowControlStatusResponse {
+            success: false,
+            message: format!("Bad SlowControlStatusRequest payload: {err}"),
+            ..Default::default()
+        });
+    }
+
+    let rpu_status = rpu.status();
+    let success = preflight.ready_for_hardware_commands() && rpu_status.is_ok();
+    let message = if success {
+        "ok".to_string()
+    } else if !preflight.ready_for_hardware_commands() {
+        preflight.failure_message()
+    } else {
+        format!(
+            "RPU status failed: {}",
+            rpu_status
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+    };
+
+    let rpu_status = rpu_status.unwrap_or_else(|err| daphne_sc_core::rpu::RpuLinkStatus {
+        available: false,
+        running: false,
+        firmware: None,
+        heartbeat: None,
+        last_fault: Some(err.to_string()),
+    });
+
+    v2::encode(pb::sc::SlowControlStatusResponse {
+        success,
+        message,
+        firmware: Some(firmware_status_from_preflight(preflight)),
+        rpu: Some(pb::sc::RpuStatus {
+            available: rpu_status.available,
+            running: rpu_status.running,
+            firmware: rpu_status.firmware.unwrap_or_default(),
+            heartbeat: rpu_status.heartbeat.unwrap_or_default(),
+            last_fault: rpu_status.last_fault.unwrap_or_default(),
+        }),
+        i2c: i2c_status_from_preflight(preflight),
+        clocks: Some(clock_status_from_preflight(preflight)),
+        temperatures: Vec::new(),
+        rails: Vec::new(),
+        services: service_status_from_preflight(preflight),
+        errors: preflight_errors(preflight),
+    })
+}
+
+fn firmware_status_from_preflight(preflight: &PreflightStatus) -> pb::sc::FirmwareStatus {
+    let fpga_state = preflight
+        .checks()
+        .iter()
+        .find(|check| check.name == "fpga_manager")
+        .map(|check| check.detail.clone())
+        .unwrap_or_default();
+    let pl_devices_present = preflight
+        .checks()
+        .iter()
+        .filter(|check| check.name == "pl_i2c_device" || check.name == "pl_spi_device")
+        .filter(|check| check.ok)
+        .map(|check| check.detail.clone())
+        .collect();
+    pb::sc::FirmwareStatus {
+        loaded: preflight
+            .checks()
+            .iter()
+            .any(|check| check.name == "fpga_manager" && check.ok),
+        fpga_manager_state: fpga_state,
+        overlay_name: String::new(),
+        build_id: String::new(),
+        pl_devices_present,
+    }
+}
+
+fn i2c_status_from_preflight(preflight: &PreflightStatus) -> Vec<pb::sc::I2cBusStatus> {
+    preflight
+        .checks()
+        .iter()
+        .find(|check| check.name == "i2c_device_node")
+        .map(|check| {
+            check
+                .detail
+                .split(',')
+                .filter_map(|path| {
+                    let bus = path.rsplit('-').next()?.parse().ok()?;
+                    Some(pb::sc::I2cBusStatus {
+                        bus,
+                        path: path.to_string(),
+                        devices: Vec::new(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn clock_status_from_preflight(preflight: &PreflightStatus) -> pb::sc::ClockStatus {
+    let clock_ready = preflight
+        .checks()
+        .iter()
+        .any(|check| check.name == "clockchip_i2c" && check.ok);
+    pb::sc::ClockStatus {
+        endpoint_clock_source_controlled: clock_ready,
+        mmcm0_locked: false,
+        mmcm1_locked: false,
+        raw_endpoint_status: 0,
+    }
+}
+
+fn service_status_from_preflight(preflight: &PreflightStatus) -> Vec<pb::sc::ServiceStatus> {
+    preflight
+        .checks()
+        .iter()
+        .filter(|check| check.name.ends_with(".service"))
+        .map(|check| pb::sc::ServiceStatus {
+            name: check.name.clone(),
+            active: check.ok,
+            state: check.detail.clone(),
+        })
+        .collect()
+}
+
+fn preflight_errors(preflight: &PreflightStatus) -> Vec<String> {
+    preflight
+        .checks()
+        .iter()
+        .filter(|check| !check.ok)
+        .map(|check| format!("{}: {}", check.name, check.detail))
+        .collect()
 }
 
 fn handle_not_implemented(message_type: MessageTypeV2) -> Vec<u8> {

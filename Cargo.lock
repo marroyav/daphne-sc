@@ -129,6 +129,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "daphne-sc-core",
+ "libc",
  "prost",
  "prost-build",
  "zmq",

@@ -9,15 +9,19 @@ fn main() -> Result<()> {
     let args = Args::parse()?;
     let request = match args.command {
         Command::ReadTestReg => request_envelope(
-            pb::MessageTypeV2::Mt2ReadTestRegReq,
+            pb::MessageTypeV2::Mt2ReadTestRegReq as i32,
             pb::TestRegRequest::default().encode_to_vec(),
+        ),
+        Command::Status => request_envelope(
+            1000,
+            pb::sc::SlowControlStatusRequest { level: 1 }.encode_to_vec(),
         ),
         Command::WriteAfeReg {
             afe_block,
             reg_address,
             reg_value,
         } => request_envelope(
-            pb::MessageTypeV2::Mt2WriteAfeRegReq,
+            pb::MessageTypeV2::Mt2WriteAfeRegReq as i32,
             pb::CmdWriteAfeReg {
                 id: 1,
                 afe_block,
@@ -61,6 +65,28 @@ fn main() -> Result<()> {
         response_env.r#type, response_env.task_id, response_env.correl_id
     );
 
+    if response_env.r#type == 1001 {
+        let resp = pb::sc::SlowControlStatusResponse::decode(response_env.payload.as_slice())
+            .context("decoding SlowControlStatusResponse")?;
+        println!(
+            "STATUS success={} message={} services={} errors={}",
+            resp.success,
+            resp.message,
+            resp.services.len(),
+            resp.errors.len()
+        );
+        for service in resp.services {
+            println!(
+                "  service {} active={} state={}",
+                service.name, service.active, service.state
+            );
+        }
+        for err in resp.errors {
+            println!("  error {err}");
+        }
+        return Ok(());
+    }
+
     match pb::MessageTypeV2::try_from(response_env.r#type) {
         Ok(pb::MessageTypeV2::Mt2ReadTestRegResp) => {
             let resp = pb::TestRegResponse::decode(response_env.payload.as_slice())
@@ -97,12 +123,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn request_envelope(message_type: pb::MessageTypeV2, payload: Vec<u8>) -> pb::ControlEnvelopeV2 {
+fn request_envelope(message_type: i32, payload: Vec<u8>) -> pb::ControlEnvelopeV2 {
     let msg_id = now_ns() & ((1_u64 << 63) - 1);
     pb::ControlEnvelopeV2 {
         version: 2,
         dir: pb::Direction::DirRequest as i32,
-        r#type: message_type as i32,
+        r#type: message_type,
         payload,
         task_id: msg_id,
         msg_id,
@@ -121,6 +147,7 @@ fn now_ns() -> u64 {
 
 enum Command {
     ReadTestReg,
+    Status,
     WriteAfeReg {
         afe_block: u32,
         reg_address: u32,
@@ -162,6 +189,7 @@ impl Args {
 
         let command = match positionals.first().map(String::as_str) {
             None | Some("read-test-reg") => Command::ReadTestReg,
+            Some("status") => Command::Status,
             Some("write-afe-reg") => {
                 if positionals.len() != 4 {
                     bail!("write-afe-reg requires: afeBlock regAddress regValue");
@@ -196,6 +224,7 @@ fn parse_u32(value: &str) -> Result<u32> {
 fn print_help() {
     println!("usage:");
     println!("  zmq_smoke_client [--endpoint tcp://host:port] read-test-reg");
+    println!("  zmq_smoke_client [--endpoint tcp://host:port] status");
     println!("  zmq_smoke_client [--endpoint tcp://host:port] write-afe-reg <afeBlock> <regAddress> <regValue>");
     println!("default endpoint: {DEFAULT_ENDPOINT}");
 }

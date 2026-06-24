@@ -72,7 +72,7 @@ pub fn run<T: RpuAfeTransport>(endpoint: &str, options: RouterOptions, rpu: &mut
             continue;
         }
 
-        let preflight_status = if needs_hardware_preflight(payload) {
+        let preflight_status = if needs_preflight(payload) {
             preflight.check()
         } else {
             PreflightStatus::ready()
@@ -104,7 +104,7 @@ pub fn handle_envelope<T: RpuAfeTransport>(
     Some(v2::encode(v2::make_response(&req, response_payload)))
 }
 
-fn needs_hardware_preflight(payload: &[u8]) -> bool {
+fn needs_preflight(payload: &[u8]) -> bool {
     let Ok(req) = pb::ControlEnvelopeV2::decode(payload) else {
         return false;
     };
@@ -115,6 +115,7 @@ fn needs_hardware_preflight(payload: &[u8]) -> bool {
         return false;
     };
     matches!(route_message_type(message_type), CommandRoute::RpuAfe)
+        || matches!(message_type, MessageTypeV2::ReadSlowControlStatusReq)
 }
 
 #[cfg(test)]
@@ -223,8 +224,8 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(needs_hardware_preflight(&afe_env.encode_to_vec()));
-        assert!(!needs_hardware_preflight(&test_env.encode_to_vec()));
+        assert!(needs_preflight(&afe_env.encode_to_vec()));
+        assert!(!needs_preflight(&test_env.encode_to_vec()));
     }
 
     #[test]

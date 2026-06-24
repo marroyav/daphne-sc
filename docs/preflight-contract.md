@@ -35,11 +35,23 @@ The live DAPHNE-15 service currently owns clock-chip programming through
 `clockchip.service` and `/usr/local/bin/daphne-clockchip.sh`. The Rust server
 does not silently reprogram the chip on every request.
 
-The initial Rust integration treats the clock service as the authoritative
-board-level prerequisite and validates that the configured chip is reachable.
-When the clock owner is moved into the Rust/RPU stack, the register table and
-verification logic from the clock-chip service should be ported explicitly and
-kept separate from endpoint MMCM and timestamp readiness checks.
+The Rust workspace now carries the clock-chip register table and programming
+sequence in `daphne-sc-core`, plus a Linux `/dev/i2c-*` backend in
+`daphne-sc-server`. The standalone `clockchip_tool` binary can verify or
+program the chip without using the shell script:
+
+```bash
+clockchip_tool verify --bus 2 --chip 0x70 --only 0xE6
+clockchip_tool program --bus 2 --chip 0x70 --verify
+```
+
+Preflight validates the configured chip by reading the sanity register
+`0xE6 == 0x06`. The next deployment step is to replace the service script with
+the Rust binary after root-level board validation.
+
+When the clock owner is moved into the RPU stack, the same register table and
+backend trait should be reused with an RPU I2C implementation. Endpoint MMCM and
+timestamp readiness checks must remain separate.
 
 ## Endpoint Readiness Is Separate
 

@@ -78,6 +78,10 @@ add an RPMsg or shared-memory command queue. The command protocol should be
 fixed-size and bounded; protobuf is kept on the external ZMQ API, not required
 inside the real-time core.
 
+The first fixed-size wire ABI and optional Linux RPMsg/file transport are
+defined in `docs/rpu-wire-abi.md`. Until an RPU firmware endpoint exists, the
+server still defaults to the fail-closed transport.
+
 Minimum shared status:
 
 - ABI version.

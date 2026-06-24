@@ -17,6 +17,12 @@ transport. The gate requires the firmware, clockchip, and endpoint service chain
 healthy, the FPGA manager to report `operating`, and the I2C/SPI/RPU interfaces to be
 present and reachable.
 
+Current Rust migration pieces:
+
+- `clockchip_tool` verifies/programs the external clock chip through `/dev/i2c-*`.
+- `SlowControlStatusRequest` uses message type `1000` and reports preflight/RPU status.
+- `daphne-sc-server --rpu-rpmsg PATH` selects the fixed-size RPU wire transport.
+
 ## Current Starting Point
 
 - DAPHNE-15 has Linux `remoteproc` entries for both R5 cores.

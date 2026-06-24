@@ -37,6 +37,7 @@ pub enum MessageTypeV2 {
     ReadTestRegReq = 304,
     ReadTriggerCountersReq = 320,
     ReadGeneralInfoReq = 322,
+    ReadSlowControlStatusReq = 1000,
 }
 
 impl TryFrom<u32> for MessageTypeV2 {
@@ -80,6 +81,7 @@ impl TryFrom<u32> for MessageTypeV2 {
             304 => Ok(Self::ReadTestRegReq),
             320 => Ok(Self::ReadTriggerCountersReq),
             322 => Ok(Self::ReadGeneralInfoReq),
+            1000 => Ok(Self::ReadSlowControlStatusReq),
             _ => Err(()),
         }
     }
@@ -125,9 +127,10 @@ pub fn route_message_type(message_type: MessageTypeV2) -> CommandRoute {
         | AlignAfeReq
         | WriteAfeFunctionReq => CommandRoute::RpuAfe,
 
-        ReadCurrentMonitorReq | ReadBiasVoltageMonitorReq | ReadGeneralInfoReq => {
-            CommandRoute::LinuxStatus
-        }
+        ReadCurrentMonitorReq
+        | ReadBiasVoltageMonitorReq
+        | ReadGeneralInfoReq
+        | ReadSlowControlStatusReq => CommandRoute::LinuxStatus,
 
         ConfigureClksReq
         | DumpSpybufferReq

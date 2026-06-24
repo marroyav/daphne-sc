@@ -1,11 +1,12 @@
+use crate::i2c::{i2c_bus_candidates, LinuxI2cDevice};
+use daphne_sc_core::clockchip::{
+    ClockChipBus, CLOCKCHIP_DEFAULT_ADDR, CLOCKCHIP_SANITY_REGISTER, CLOCKCHIP_SANITY_VALUE,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
-
-const DEFAULT_CLOCKCHIP_ADDR: &str = "0x70";
-const DEFAULT_DISCOVERY_ADDRS: &str = "0x70 0x71 0x72";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreflightStatus {
@@ -240,7 +241,12 @@ fn any_remoteproc_device() -> PreflightCheck {
 }
 
 fn clockchip_reachable(config: &HashMap<String, String>) -> PreflightCheck {
-    let chip = env_value(config, "CLOCKCHIP_ADDR", DEFAULT_CLOCKCHIP_ADDR);
+    let chip = parse_i2c_addr(&env_value(
+        config,
+        "CLOCKCHIP_ADDR",
+        &format!("0x{CLOCKCHIP_DEFAULT_ADDR:02X}"),
+    ))
+    .unwrap_or(CLOCKCHIP_DEFAULT_ADDR);
     let buses = clockchip_bus_candidates(config);
     if buses.is_empty() {
         return PreflightCheck::fail("clockchip_i2c", "no candidate I2C buses");
@@ -273,29 +279,20 @@ fn clockchip_reachable(config: &HashMap<String, String>) -> PreflightCheck {
         PreflightCheck::fail(
             "clockchip_i2c",
             format!(
-                "{chip} not reachable on {candidates}; probe errors: {}",
+                "0x{chip:02X} not reachable on {candidates}; probe errors: {}",
                 unavailable.join("; ")
             ),
         )
     }
 }
 
-fn clockchip_bus_candidates(config: &HashMap<String, String>) -> Vec<String> {
+fn clockchip_bus_candidates(config: &HashMap<String, String>) -> Vec<u8> {
     let configured = env_value(config, "CLOCKCHIP_BUS", "auto");
     if !configured.is_empty() && configured != "auto" {
-        return vec![configured];
+        return configured.parse().map(|bus| vec![bus]).unwrap_or_default();
     }
 
-    let Ok(entries) = fs::read_dir("/dev") else {
-        return Vec::new();
-    };
-    let mut buses = entries
-        .flatten()
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter_map(|name| name.strip_prefix("i2c-").map(str::to_string))
-        .collect::<Vec<_>>();
-    buses.sort_by_key(|bus| bus.parse::<u32>().unwrap_or(u32::MAX));
-    buses
+    i2c_bus_candidates(None)
 }
 
 fn env_value(config: &HashMap<String, String>, key: &str, default: &str) -> String {
@@ -312,52 +309,40 @@ enum ProbeResult {
     Unavailable(String),
 }
 
-fn probe_i2c_addr(bus: &str, addr: &str) -> ProbeResult {
-    let addr_value = parse_i2c_addr(addr).unwrap_or(0x70);
-    let addr_hex = format!("{addr_value:02x}");
-    match Command::new("i2cdetect")
-        .args(["-y", bus, addr, addr])
-        .output()
-    {
-        Ok(output) => {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                return ProbeResult::Unavailable(format!(
-                    "i2cdetect bus={bus} addr={addr} failed: {stderr}"
-                ));
-            }
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.split_whitespace().any(|token| {
-                token.eq_ignore_ascii_case(&addr_hex) || token.eq_ignore_ascii_case("UU")
-            }) {
-                ProbeResult::Found(format!("{addr} present on /dev/i2c-{bus}"))
-            } else {
+fn probe_i2c_addr(bus: &u8, addr: &u16) -> ProbeResult {
+    match LinuxI2cDevice::open(*bus, *addr) {
+        Ok(mut device) => match device.read_register(CLOCKCHIP_SANITY_REGISTER) {
+            Ok(value) if value == CLOCKCHIP_SANITY_VALUE => ProbeResult::Found(format!(
+                "0x{addr:02X} present on /dev/i2c-{bus}; 0x{CLOCKCHIP_SANITY_REGISTER:02X}=0x{value:02X}"
+            )),
+            Ok(value) => ProbeResult::Unavailable(format!(
+                "/dev/i2c-{bus} addr 0x{addr:02X} read 0x{CLOCKCHIP_SANITY_REGISTER:02X}=0x{value:02X}, expected 0x{CLOCKCHIP_SANITY_VALUE:02X}"
+            )),
+            Err(err) => ProbeResult::Unavailable(format!(
+                "/dev/i2c-{bus} addr 0x{addr:02X} sanity read failed: {err}"
+            )),
+        },
+        Err(err) => {
+            let detail = err.to_string();
+            if detail.contains("No such device") || detail.contains("Remote I/O") {
                 ProbeResult::Missing
+            } else {
+                ProbeResult::Unavailable(format!("/dev/i2c-{bus} addr 0x{addr:02X}: {err}"))
             }
         }
-        Err(err) => ProbeResult::Unavailable(format!("i2cdetect unavailable: {err}")),
     }
 }
 
-fn parse_i2c_addr(addr: &str) -> Option<u32> {
+fn parse_i2c_addr(addr: &str) -> Option<u16> {
     let trimmed = addr.trim();
     if let Some(hex) = trimmed
         .strip_prefix("0x")
         .or_else(|| trimmed.strip_prefix("0X"))
     {
-        u32::from_str_radix(hex, 16).ok()
+        u16::from_str_radix(hex, 16).ok()
     } else {
-        trimmed.parse::<u32>().ok()
+        trimmed.parse::<u16>().ok()
     }
-}
-
-#[allow(dead_code)]
-fn discovery_addrs(config: &HashMap<String, String>) -> Vec<String> {
-    env_value(config, "CLOCKCHIP_DISCOVERY_ADDRS", DEFAULT_DISCOVERY_ADDRS)
-        .split_whitespace()
-        .map(str::to_string)
-        .collect()
 }
 
 #[cfg(test)]
