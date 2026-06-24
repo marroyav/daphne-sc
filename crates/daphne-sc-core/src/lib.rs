@@ -1,3 +1,7 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
 pub mod afe;
 pub mod clockchip;
 pub mod rpu;

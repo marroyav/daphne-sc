@@ -1,0 +1,18 @@
+[Unit]
+Description=Program and validate DAPHNE timing clock chip
+After=firmware.service
+Requires=firmware.service
+PartOf=firmware.service
+Before=endpoint.service hermes.service daphne.service daphne-sc.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/firmware
+EnvironmentFile=-/etc/daphne-board.env
+EnvironmentFile=-/etc/daphne-sc.env
+ExecStart=/usr/local/bin/clockchip_tool program --verify
+TimeoutStartSec=300
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,6 @@
 use crate::rpu::RpuLinkStatus;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlowControlStatus {

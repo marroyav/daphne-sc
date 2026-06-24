@@ -124,6 +124,13 @@ name = "daphne-sc-core"
 version = "0.1.0"
 
 [[package]]
+name = "daphne-sc-rpu"
+version = "0.1.0"
+dependencies = [
+ "daphne-sc-core",
+]
+
+[[package]]
 name = "daphne-sc-server"
 version = "0.1.0"
 dependencies = [

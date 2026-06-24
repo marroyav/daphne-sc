@@ -1,3 +1,5 @@
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt;
 
 pub const AFE_COUNT: u8 = 5;
@@ -234,6 +236,7 @@ impl fmt::Display for AfeValidationError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for AfeValidationError {}
 
 fn validate_12bit(value: u16) -> Result<(), AfeValidationError> {

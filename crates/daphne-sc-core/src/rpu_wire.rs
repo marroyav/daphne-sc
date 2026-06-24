@@ -396,6 +396,7 @@ impl fmt::Display for RpuWireError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for RpuWireError {}
 
 fn put_u16(out: &mut [u8], offset: usize, value: u16) {

@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::fmt;
 
 pub const CLOCKCHIP_DEFAULT_ADDR: u16 = 0x70;

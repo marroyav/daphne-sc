@@ -1,0 +1,7 @@
+[package]
+name = "daphne-sc-rpu"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+daphne-sc-core = { path = "../daphne-sc-core", default-features = false }

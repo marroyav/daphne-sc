@@ -1,4 +1,5 @@
 use crate::afe::AfeCommand;
+use alloc::string::{String, ToString};
 use core::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +43,7 @@ impl fmt::Display for RpuError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for RpuError {}
 
 #[derive(Debug, Default)]

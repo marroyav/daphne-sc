@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/daphne-sc-core",
+    "crates/daphne-sc-rpu",
     "crates/daphne-sc-server",
 ]
 resolver = "2"
@@ -8,4 +9,3 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
-

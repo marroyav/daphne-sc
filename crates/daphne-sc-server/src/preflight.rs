@@ -145,7 +145,11 @@ impl PreflightProvider for LinuxPreflight {
 
 fn read_board_config() -> HashMap<String, String> {
     let mut values = HashMap::new();
-    for path in ["/etc/default/firmware", "/etc/daphne-board.env"] {
+    for path in [
+        "/etc/default/firmware",
+        "/etc/daphne-board.env",
+        "/etc/daphne-sc.env",
+    ] {
         let Ok(content) = fs::read_to_string(path) else {
             continue;
         };
@@ -367,6 +371,12 @@ fn clockchip_bus_candidates(config: &HashMap<String, String>) -> Vec<u8> {
 }
 
 fn env_value(config: &HashMap<String, String>, key: &str, default: &str) -> String {
+    if let Ok(value) = std::env::var(key) {
+        if !value.is_empty() {
+            return value;
+        }
+    }
+
     config
         .get(key)
         .filter(|value| !value.is_empty())

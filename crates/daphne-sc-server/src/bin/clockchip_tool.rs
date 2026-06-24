@@ -99,8 +99,8 @@ struct Args {
 impl Args {
     fn parse() -> Result<Self> {
         let mut positionals = Vec::new();
-        let mut bus = None;
-        let mut address = CLOCKCHIP_DEFAULT_ADDR;
+        let mut bus = env_clockchip_bus()?;
+        let mut address = env_clockchip_addr()?;
         let mut verify_after_write = false;
         let mut reset = true;
         let mut dry_run = false;
@@ -193,4 +193,29 @@ fn print_help() {
         "  clockchip_tool program [--bus N] [--chip 0x70] [--verify] [--no-reset] [--dry-run]"
     );
     println!("default chip: 0x{CLOCKCHIP_DEFAULT_ADDR:02X}; no --bus means auto-discover");
+    println!("env: CLOCKCHIP_BUS, CLOCKCHIP_ADDR");
+}
+
+fn env_clockchip_bus() -> Result<Option<u8>> {
+    let Some(value) = std::env::var("CLOCKCHIP_BUS")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    if value == "auto" {
+        Ok(None)
+    } else {
+        Ok(Some(parse_u8(&value)?))
+    }
+}
+
+fn env_clockchip_addr() -> Result<u16> {
+    std::env::var("CLOCKCHIP_ADDR")
+        .ok()
+        .map(|value| parse_u16(&value))
+        .transpose()
+        .map(|value| value.unwrap_or(CLOCKCHIP_DEFAULT_ADDR))
 }
