@@ -12,6 +12,7 @@ pub const DAC_GAIN_BIAS_CONTROL_OFFSET: u32 = 0x0C00_0000;
 pub const DAC_GAIN_BIAS_U50_OFFSET: u32 = 0x0C00_0004;
 pub const DAC_GAIN_BIAS_U53_OFFSET: u32 = 0x0C00_0008;
 pub const DAC_GAIN_BIAS_U5_OFFSET: u32 = 0x0C00_000C;
+pub const BIAS_ENABLE_OFFSET: u32 = 0x1400_000C;
 
 pub const AFE_GLOBAL_RESET_BIT: u8 = 0;
 pub const AFE_GLOBAL_POWERSTATE_BIT: u8 = 1;
@@ -50,6 +51,8 @@ pub const AFE_BIAS_DAC_ROUTES: [DacRoute; AFE_COUNT as usize] = [
     DacRoute::new(DacChip::U53, 3),
     DacRoute::new(DacChip::U5, 0),
 ];
+
+pub const VBIAS_DAC_ROUTE: DacRoute = DacRoute::new(DacChip::U5, 2);
 
 impl DacRoute {
     pub const fn new(chip: DacChip, channel: u8) -> Self {
@@ -159,6 +162,8 @@ mod tests {
         assert_eq!(dac_gain_bias_offset(DacChip::U50), 0x0C00_0004);
         assert_eq!(dac_gain_bias_offset(DacChip::U53), 0x0C00_0008);
         assert_eq!(dac_gain_bias_offset(DacChip::U5), 0x0C00_000C);
+        assert_eq!(BIAS_ENABLE_OFFSET, 0x1400_000C);
+        assert_eq!(VBIAS_DAC_ROUTE, DacRoute::new(DacChip::U5, 2));
     }
 
     #[test]

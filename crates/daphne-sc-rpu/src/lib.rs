@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod mmio;
+
 use daphne_sc_core::{
     RpuWireAfeConfig, RpuWireChannelConfig, RpuWireCommand, RpuWireConfigCounts, RpuWireError,
     RpuWireOp, RpuWireReply, RpuWireStatus, RpuWireTarget, RPU_WIRE_ABI_VERSION,

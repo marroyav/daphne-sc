@@ -3,6 +3,11 @@
 This records the register contract the Rust RPU backend should implement. The
 constants and packing helpers live in `daphne-sc-core/src/afe_hw.rs`.
 
+The first RPU-side backend skeleton lives in `daphne-sc-rpu/src/mmio.rs`. It is
+generic over a small `RegisterIo` trait, so unit tests can verify exact MMIO
+offsets and write sequences without touching hardware. `VolatileRegisterIo`
+provides the future bare-metal register-window implementation.
+
 ## Sources
 
 - `daphneZMQ/srcs/FpgaRegDict.cpp`
@@ -59,3 +64,24 @@ The gain/bias word is:
 
 Trim/offset DAC writes use paired 16-bit halves. Channels 0..3 occupy the low
 half, channels 4..7 occupy the high half, and companion channels differ by 4.
+
+## Current Backend Coverage
+
+`AfeMmioBackend` currently implements:
+
+- direct AFE register read/write sequence;
+- gain/attenuation DAC writes;
+- bias DAC writes;
+- trim/offset paired DAC writes for single channel, whole AFE, or all AFEs;
+- VBIAS DAC write plus `biasEnable`;
+- AFE reset and power-state bits;
+- bounded spin waits on the AFE and DAC busy bits.
+
+It intentionally returns `Unsupported` for:
+
+- alignment;
+- free-form AFE function writes;
+- applying full `ConfigureFrontend`.
+
+Those operations require the AFE function dictionary and alignment register
+contract to be ported before they can be safely enabled.
