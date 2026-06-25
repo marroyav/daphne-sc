@@ -8,6 +8,25 @@ use std::thread;
 use std::time::Duration;
 
 const I2C_SLAVE: libc::c_ulong = 0x0703;
+const I2C_PEC: libc::c_ulong = 0x0708;
+const I2C_SMBUS: libc::c_ulong = 0x0720;
+const I2C_SMBUS_READ: u8 = 1;
+const I2C_SMBUS_WORD_DATA: u32 = 3;
+
+#[repr(C)]
+union I2cSmbusData {
+    byte: u8,
+    word: u16,
+    block: [u8; 34],
+}
+
+#[repr(C)]
+struct I2cSmbusIoctlData {
+    read_write: u8,
+    command: u8,
+    size: u32,
+    data: *mut I2cSmbusData,
+}
 
 pub struct LinuxI2cDevice {
     file: File,
@@ -47,6 +66,47 @@ impl LinuxI2cDevice {
 
     pub fn address(&self) -> u16 {
         self.address
+    }
+
+    pub fn set_pec(&self, enabled: bool) -> Result<(), LinuxI2cError> {
+        let value = if enabled { 1 } else { 0 };
+        // SAFETY: ioctl is called with a valid i2c-dev file descriptor and an
+        // integer PEC enable flag as required by Linux I2C_PEC.
+        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), I2C_PEC, value) };
+        if rc < 0 {
+            return Err(LinuxI2cError::Pec {
+                bus: self.bus,
+                address: self.address,
+                source: std::io::Error::last_os_error(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn read_word_data(&mut self, register: u8) -> Result<u16, LinuxI2cError> {
+        let mut data = I2cSmbusData { word: 0 };
+        let mut args = I2cSmbusIoctlData {
+            read_write: I2C_SMBUS_READ,
+            command: register,
+            size: I2C_SMBUS_WORD_DATA,
+            data: &mut data,
+        };
+
+        // SAFETY: ioctl is called with a valid i2c-dev file descriptor and a
+        // pointer to the Linux i2c_smbus_ioctl_data layout.
+        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), I2C_SMBUS, &mut args) };
+        if rc < 0 {
+            return Err(LinuxI2cError::Read {
+                bus: self.bus,
+                address: self.address,
+                register,
+                source: std::io::Error::last_os_error(),
+            });
+        }
+
+        // SAFETY: the kernel wrote the word field for an I2C_SMBUS_WORD_DATA
+        // read when ioctl returned success.
+        Ok(unsafe { data.word })
     }
 }
 
@@ -102,6 +162,11 @@ pub enum LinuxI2cError {
         address: u16,
         source: std::io::Error,
     },
+    Pec {
+        bus: u8,
+        address: u16,
+        source: std::io::Error,
+    },
     Read {
         bus: u8,
         address: u16,
@@ -131,6 +196,14 @@ impl fmt::Display for LinuxI2cError {
             } => write!(
                 f,
                 "could not select I2C slave 0x{address:02X} on bus {bus}: {source}"
+            ),
+            Self::Pec {
+                bus,
+                address,
+                source,
+            } => write!(
+                f,
+                "could not set PEC for I2C slave 0x{address:02X} on bus {bus}: {source}"
             ),
             Self::Read {
                 bus,

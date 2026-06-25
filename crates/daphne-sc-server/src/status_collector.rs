@@ -1,5 +1,5 @@
 use crate::endpoint::read_endpoint_register_status;
-use crate::i2c::i2c_bus_candidates;
+use crate::i2c::{i2c_bus_candidates, LinuxI2cDevice};
 use crate::preflight::PreflightStatus;
 use daphne_sc_core::rpu::RpuLinkStatus;
 use daphne_sc_core::status::{
@@ -25,6 +25,33 @@ const PL_DEVICES: &[&str] = &[
     "/sys/bus/platform/devices/9c000000.i2c",
     "/sys/bus/platform/devices/9c020000.axi_quad_spi",
 ];
+
+const PMBUS_BUS: u8 = 2;
+const PMBUS_READ_VOUT: u8 = 0x8B;
+const PMBUS_READ_IOUT: u8 = 0x8C;
+const PMBUS_REGULATORS: &[PmbusRegulator] = &[
+    PmbusRegulator {
+        name: "3VD3",
+        address: 0x12,
+    },
+    PmbusRegulator {
+        name: "2VA1",
+        address: 0x16,
+    },
+    PmbusRegulator {
+        name: "3VA6",
+        address: 0x32,
+    },
+    PmbusRegulator {
+        name: "1VD8",
+        address: 0x36,
+    },
+];
+
+struct PmbusRegulator {
+    name: &'static str,
+    address: u16,
+}
 
 pub fn collect_slow_control_status(
     preflight: &PreflightStatus,
@@ -244,7 +271,69 @@ fn collect_rails(errors: &mut Vec<String>) -> Vec<RailReading> {
         }
     }
 
+    rails.extend(collect_pmbus_regulator_rails(errors));
+
     rails
+}
+
+fn collect_pmbus_regulator_rails(errors: &mut Vec<String>) -> Vec<RailReading> {
+    let mut rails = Vec::new();
+
+    for regulator in PMBUS_REGULATORS {
+        match read_pmbus_regulator(regulator) {
+            Ok((voltage_v, current_a)) => rails.push(RailReading {
+                name: format!("pmbus/{}", regulator.name),
+                voltage_v: Some(voltage_v),
+                current_a: Some(current_a),
+                power_w: Some(voltage_v * current_a),
+                status: Some(format!(
+                    "/dev/i2c-{PMBUS_BUS} addr 0x{:02X}",
+                    regulator.address
+                )),
+            }),
+            Err(err) => errors.push(format!(
+                "PMBus regulator {} current read failed: {err}",
+                regulator.name
+            )),
+        }
+    }
+
+    rails
+}
+
+fn read_pmbus_regulator(regulator: &PmbusRegulator) -> Result<(f64, f64), String> {
+    let mut device =
+        LinuxI2cDevice::open(PMBUS_BUS, regulator.address).map_err(|err| err.to_string())?;
+    if let Err(err) = device.set_pec(true) {
+        return Err(err.to_string());
+    }
+
+    let raw_voltage = device
+        .read_word_data(PMBUS_READ_VOUT)
+        .map_err(|err| err.to_string())?;
+    let raw_current = device
+        .read_word_data(PMBUS_READ_IOUT)
+        .map_err(|err| err.to_string())?;
+
+    Ok((
+        decode_linear16(raw_voltage, -9),
+        decode_linear11(raw_current),
+    ))
+}
+
+fn decode_linear16(raw: u16, exponent: i32) -> f64 {
+    f64::from(raw as i16) * 2.0_f64.powi(exponent)
+}
+
+fn decode_linear11(raw: u16) -> f64 {
+    let mantissa = sign_extend(raw & 0x07FF, 11);
+    let exponent = sign_extend(raw >> 11, 5);
+    f64::from(mantissa) * 2.0_f64.powi(exponent)
+}
+
+fn sign_extend(value: u16, bits: u8) -> i32 {
+    let shift = 32 - u32::from(bits);
+    ((i32::from(value)) << shift) >> shift
 }
 
 fn collect_service_statuses() -> Vec<ServiceStatus> {
@@ -490,5 +579,13 @@ mod tests {
             "running; firmware=rpu-daphne-sc.elf"
         );
         assert_eq!(remoteproc_state_detail("offline", None), "offline");
+    }
+
+    #[test]
+    fn decodes_pmbus_linear_formats() {
+        assert_eq!(decode_linear16(0x0200, -9), 1.0);
+        assert_eq!(decode_linear11(0x0001), 1.0);
+        assert_eq!(decode_linear11(0xF801), 0.5);
+        assert_eq!(decode_linear11(0x07FF), -1.0);
     }
 }
