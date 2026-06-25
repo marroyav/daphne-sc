@@ -87,6 +87,23 @@ fn main() -> Result<()> {
                 clock.raw_endpoint_status
             );
         }
+        if let Some(firmware) = resp.firmware {
+            let pl_devices = firmware.pl_devices_present.join(",");
+            println!(
+                "  firmware loaded={} fpga_state={} overlay={} build_id={} pl_devices={}",
+                firmware.loaded,
+                firmware.fpga_manager_state,
+                firmware.overlay_name,
+                firmware.build_id,
+                pl_devices
+            );
+        }
+        if let Some(rpu) = resp.rpu {
+            println!(
+                "  rpu available={} running={} firmware={} heartbeat={} last_fault={}",
+                rpu.available, rpu.running, rpu.firmware, rpu.heartbeat, rpu.last_fault
+            );
+        }
         for bus in resp.i2c {
             let devices = bus
                 .devices
