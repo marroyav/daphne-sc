@@ -302,7 +302,7 @@ fn handle_not_implemented(message_type: MessageTypeV2) -> Vec<u8> {
     }
 }
 
-fn handle_configure_fe<T: RpuAfeTransport>(payload: &[u8], _rpu: &mut T) -> Vec<u8> {
+fn handle_configure_fe<T: RpuAfeTransport>(payload: &[u8], rpu: &mut T) -> Vec<u8> {
     let req = match decode::<pb::ConfigureRequest>(payload) {
         Ok(req) => req,
         Err(err) => {
@@ -313,22 +313,20 @@ fn handle_configure_fe<T: RpuAfeTransport>(payload: &[u8], _rpu: &mut T) -> Vec<
         }
     };
 
-    let afe_count = req.afes.len();
-    let channel_count = req.channels.len();
-    if let Err(err) = configure_command(req) {
-        return v2::encode(pb::ConfigureResponse {
-            success: false,
-            message: err,
-        });
-    }
+    let command = match configure_command(req) {
+        Ok(command) => command,
+        Err(err) => {
+            return v2::encode(pb::ConfigureResponse {
+                success: false,
+                message: err,
+            });
+        }
+    };
 
-    let message = format!(
-        "RPU interlock active: code 2; ConfigureFe is disabled until AFE power/reset sequencing is validated (afes={}, channels={})",
-        afe_count, channel_count
-    );
+    let outcome = submit(rpu, command);
     v2::encode(pb::ConfigureResponse {
-        success: false,
-        message,
+        success: outcome.success,
+        message: outcome.message,
     })
 }
 
@@ -1104,6 +1102,7 @@ fn describe_alignment_context(context: u32) -> Option<String> {
         3 => "delay-scan",
         4 => "bitslip-scan",
         5 => "vtc-restore",
+        6 => "frame-clock-probe",
         _ => "unknown",
     };
     if afe == 0xFF {

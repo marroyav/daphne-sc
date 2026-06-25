@@ -7,6 +7,8 @@ use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::time::Duration;
 
+const RPMSG_FRAME_PACING: Duration = Duration::from_millis(50);
+
 pub struct RpmsgAfeTransport {
     file: File,
     next_sequence: u64,
@@ -34,6 +36,7 @@ impl RpmsgAfeTransport {
     }
 
     fn transact(&mut self, command: RpuWireCommand) -> Result<RpuWireReply, RpuError> {
+        std::thread::sleep(RPMSG_FRAME_PACING);
         self.file
             .write_all(&command.encode())
             .map_err(|err| RpuError::Transport(format!("writing RPU command: {err}")))?;
@@ -59,6 +62,7 @@ impl RpmsgAfeTransport {
         if reply.fault_code != 0 {
             self.last_fault = Some(format!("RPU fault code {}", reply.fault_code));
         }
+        std::thread::sleep(RPMSG_FRAME_PACING);
         Ok(reply)
     }
 
@@ -96,8 +100,19 @@ impl RpuAfeTransport for RpmsgAfeTransport {
             .map_err(|err| RpuError::Rejected(err.to_string()))?;
 
         let mut final_reply = None;
-        for frame in frames {
-            let reply = self.transact(frame)?;
+        for (idx, frame) in frames.into_iter().enumerate() {
+            let op = frame.op;
+            let sequence = frame.sequence;
+            let reply = self.transact(frame).map_err(|err| {
+                RpuError::Transport(format!(
+                    "frame {}/{} op {:?} seq {}: {}",
+                    idx + 1,
+                    frame_count,
+                    op,
+                    sequence,
+                    err
+                ))
+            })?;
             final_reply = Some(reply);
         }
         let reply = final_reply
