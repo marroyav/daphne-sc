@@ -30,6 +30,63 @@ fn main() -> Result<()> {
             }
             .encode_to_vec(),
         ),
+        Command::ReadAfeReg {
+            afe_block,
+            reg_address,
+        } => request_envelope(
+            pb::MessageTypeV2::Mt2ReadAfeRegReq as i32,
+            pb::CmdReadAfeReg {
+                id: 1,
+                afe_block,
+                reg_address,
+            }
+            .encode_to_vec(),
+        ),
+        Command::SetAfeReset { asserted } => request_envelope(
+            pb::MessageTypeV2::Mt2SetAfeResetReq as i32,
+            pb::CmdSetAfeReset {
+                id: 1,
+                reset_value: asserted,
+            }
+            .encode_to_vec(),
+        ),
+        Command::DoAfeReset => request_envelope(
+            pb::MessageTypeV2::Mt2DoAfeResetReq as i32,
+            pb::CmdDoAfeReset { id: 1 }.encode_to_vec(),
+        ),
+        Command::SetAfePower { enabled } => request_envelope(
+            pb::MessageTypeV2::Mt2SetAfePowerstateReq as i32,
+            pb::CmdSetAfePowerState {
+                id: 1,
+                power_state: enabled,
+            }
+            .encode_to_vec(),
+        ),
+        Command::WriteAfeFunction {
+            afe_block,
+            function,
+            config_value,
+        } => request_envelope(
+            pb::MessageTypeV2::Mt2WriteAfeFunctionReq as i32,
+            pb::CmdWriteAfeFunction {
+                afe_block,
+                function,
+                config_value,
+            }
+            .encode_to_vec(),
+        ),
+        Command::ConfigureMin {
+            biasctrl,
+            vgain,
+            offset,
+        } => request_envelope(
+            pb::MessageTypeV2::Mt2ConfigureFeReq as i32,
+            minimal_configure_request(biasctrl, vgain, offset).encode_to_vec(),
+        ),
+        Command::AlignAfe => request_envelope(
+            pb::MessageTypeV2::Mt2AlignAfeReq as i32,
+            pb::CmdAlignAfEs::default().encode_to_vec(),
+        ),
     };
 
     let context = zmq::Context::new();
@@ -151,6 +208,61 @@ fn main() -> Result<()> {
                 resp.success, resp.afe_block, resp.reg_address, resp.reg_value, resp.message
             );
         }
+        Ok(pb::MessageTypeV2::Mt2ReadAfeRegResp) => {
+            let resp = pb::CmdReadAfeRegResponse::decode(response_env.payload.as_slice())
+                .context("decoding CmdReadAfeRegResponse")?;
+            println!(
+                "READ_AFE_REG success={} afeBlock={} regAddress={} regValue=0x{:04x} message={}",
+                resp.success, resp.afe_block, resp.reg_address, resp.reg_value, resp.message
+            );
+        }
+        Ok(pb::MessageTypeV2::Mt2SetAfeResetResp) => {
+            let resp = pb::CmdSetAfeResetResponse::decode(response_env.payload.as_slice())
+                .context("decoding CmdSetAfeResetResponse")?;
+            println!(
+                "SET_AFE_RESET success={} resetValue={} message={}",
+                resp.success, resp.reset_value, resp.message
+            );
+        }
+        Ok(pb::MessageTypeV2::Mt2DoAfeResetResp) => {
+            let resp = pb::CmdDoAfeResetResponse::decode(response_env.payload.as_slice())
+                .context("decoding CmdDoAfeResetResponse")?;
+            println!(
+                "DO_AFE_RESET success={} message={}",
+                resp.success, resp.message
+            );
+        }
+        Ok(pb::MessageTypeV2::Mt2SetAfePowerstateResp) => {
+            let resp = pb::CmdSetAfePowerStateResponse::decode(response_env.payload.as_slice())
+                .context("decoding CmdSetAfePowerStateResponse")?;
+            println!(
+                "SET_AFE_POWER success={} powerState={} message={}",
+                resp.success, resp.power_state, resp.message
+            );
+        }
+        Ok(pb::MessageTypeV2::Mt2WriteAfeFunctionResp) => {
+            let resp = pb::CmdWriteAfeFunctionResponse::decode(response_env.payload.as_slice())
+                .context("decoding CmdWriteAfeFunctionResponse")?;
+            println!(
+                "WRITE_AFE_FUNCTION success={} afeBlock={} function={} configValue={} message={}",
+                resp.success, resp.afe_block, resp.function, resp.config_value, resp.message
+            );
+        }
+        Ok(pb::MessageTypeV2::Mt2ConfigureFeResp) => {
+            let resp = pb::ConfigureResponse::decode(response_env.payload.as_slice())
+                .context("decoding ConfigureResponse")?;
+            println!("CONFIGURE_FE success={}", resp.success);
+            print_message_preview(&resp.message, 24);
+        }
+        Ok(pb::MessageTypeV2::Mt2AlignAfeResp) => {
+            let resp = pb::CmdAlignAfEsResponse::decode(response_env.payload.as_slice())
+                .context("decoding CmdAlignAfEsResponse")?;
+            println!(
+                "ALIGN_AFE success={} delay={:?} bitslip={:?}",
+                resp.success, resp.delay, resp.bitslip
+            );
+            print_message_preview(&resp.message, 24);
+        }
         Ok(other) => {
             println!(
                 "unhandled response type {:?}; payload bytes={}",
@@ -168,6 +280,64 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn minimal_configure_request(biasctrl: u32, vgain: u32, offset: u32) -> pb::ConfigureRequest {
+    let channels = (0..40)
+        .map(|channel| pb::ChannelConfig {
+            id: channel,
+            trim: 0,
+            offset,
+            gain: 1,
+        })
+        .collect();
+    let afes = (0..5)
+        .map(|afe| pb::AfeConfig {
+            id: afe,
+            attenuators: vgain,
+            v_bias: 0,
+            adc: Some(pb::AdcConfig {
+                resolution: true,
+                output_format: true,
+                sb_first: false,
+            }),
+            pga: Some(pb::PgaConfig {
+                lpf_cut_frequency: 4,
+                integrator_disable: true,
+                gain: true,
+            }),
+            lna: Some(pb::LnaConfig {
+                clamp: 0,
+                gain: 2,
+                integrator_disable: true,
+            }),
+        })
+        .collect();
+
+    pb::ConfigureRequest {
+        daphne_address: "127.0.0.1".to_string(),
+        slot: 0,
+        timeout_ms: 30_000,
+        biasctrl,
+        self_trigger_threshold: 0x0C,
+        self_trigger_xcorr: 0x68,
+        tp_conf: 0x0010_DB35,
+        compensator: 0x00FF_FFFF_FFFF,
+        inverters: 0x00FF_0000_0000,
+        channels,
+        afes,
+        full_stream_channels: Vec::new(),
+    }
+}
+
+fn print_message_preview(message: &str, max_lines: usize) {
+    let lines = message.lines().collect::<Vec<_>>();
+    for line in lines.iter().take(max_lines) {
+        println!("  {line}");
+    }
+    if lines.len() > max_lines {
+        println!("  ... ({} more lines)", lines.len() - max_lines);
+    }
 }
 
 fn request_envelope(message_type: i32, payload: Vec<u8>) -> pb::ControlEnvelopeV2 {
@@ -200,6 +370,28 @@ enum Command {
         reg_address: u32,
         reg_value: u32,
     },
+    ReadAfeReg {
+        afe_block: u32,
+        reg_address: u32,
+    },
+    SetAfeReset {
+        asserted: bool,
+    },
+    DoAfeReset,
+    SetAfePower {
+        enabled: bool,
+    },
+    WriteAfeFunction {
+        afe_block: u32,
+        function: String,
+        config_value: u32,
+    },
+    ConfigureMin {
+        biasctrl: u32,
+        vgain: u32,
+        offset: u32,
+    },
+    AlignAfe,
 }
 
 struct Args {
@@ -247,6 +439,58 @@ impl Args {
                     reg_value: parse_u32(&positionals[3])?,
                 }
             }
+            Some("read-afe-reg") => {
+                if positionals.len() != 3 {
+                    bail!("read-afe-reg requires: afeBlock regAddress");
+                }
+                Command::ReadAfeReg {
+                    afe_block: parse_u32(&positionals[1])?,
+                    reg_address: parse_u32(&positionals[2])?,
+                }
+            }
+            Some("set-afe-reset") => {
+                if positionals.len() != 2 {
+                    bail!("set-afe-reset requires: true|false");
+                }
+                Command::SetAfeReset {
+                    asserted: parse_bool(&positionals[1])?,
+                }
+            }
+            Some("do-afe-reset") => {
+                if positionals.len() != 1 {
+                    bail!("do-afe-reset does not accept arguments");
+                }
+                Command::DoAfeReset
+            }
+            Some("set-afe-power") => {
+                if positionals.len() != 2 {
+                    bail!("set-afe-power requires: true|false");
+                }
+                Command::SetAfePower {
+                    enabled: parse_bool(&positionals[1])?,
+                }
+            }
+            Some("write-afe-function") => {
+                if positionals.len() != 4 {
+                    bail!("write-afe-function requires: afeBlock function configValue");
+                }
+                Command::WriteAfeFunction {
+                    afe_block: parse_u32(&positionals[1])?,
+                    function: positionals[2].clone(),
+                    config_value: parse_u32(&positionals[3])?,
+                }
+            }
+            Some("configure-min") => {
+                if positionals.len() > 4 {
+                    bail!("configure-min accepts at most: biasctrl vgain offset");
+                }
+                Command::ConfigureMin {
+                    biasctrl: parse_optional_u32(&positionals, 1, 0)?,
+                    vgain: parse_optional_u32(&positionals, 2, 1600)?,
+                    offset: parse_optional_u32(&positionals, 3, 2275)?,
+                }
+            }
+            Some("align-afe") => Command::AlignAfe,
             Some(other) => bail!("unknown command: {other}"),
         };
 
@@ -256,6 +500,21 @@ impl Args {
             timeout_ms,
         })
     }
+}
+
+fn parse_bool(value: &str) -> Result<bool> {
+    match value {
+        "1" | "true" | "TRUE" | "on" | "ON" => Ok(true),
+        "0" | "false" | "FALSE" | "off" | "OFF" => Ok(false),
+        _ => bail!("invalid boolean: {value}; expected true/false or 1/0"),
+    }
+}
+
+fn parse_optional_u32(positionals: &[String], index: usize, default: u32) -> Result<u32> {
+    positionals
+        .get(index)
+        .map(|value| parse_u32(value))
+        .unwrap_or(Ok(default))
 }
 
 fn parse_u32(value: &str) -> Result<u32> {
@@ -273,5 +532,14 @@ fn print_help() {
     println!("  zmq_smoke_client [--endpoint tcp://host:port] read-test-reg");
     println!("  zmq_smoke_client [--endpoint tcp://host:port] status");
     println!("  zmq_smoke_client [--endpoint tcp://host:port] write-afe-reg <afeBlock> <regAddress> <regValue>");
+    println!(
+        "  zmq_smoke_client [--endpoint tcp://host:port] read-afe-reg <afeBlock> <regAddress>"
+    );
+    println!("  zmq_smoke_client [--endpoint tcp://host:port] set-afe-reset <true|false>");
+    println!("  zmq_smoke_client [--endpoint tcp://host:port] do-afe-reset");
+    println!("  zmq_smoke_client [--endpoint tcp://host:port] set-afe-power <true|false>");
+    println!("  zmq_smoke_client [--endpoint tcp://host:port] write-afe-function <afeBlock> <function> <configValue>");
+    println!("  zmq_smoke_client [--endpoint tcp://host:port] configure-min [biasctrl=0] [vgain=1600] [offset=2275]");
+    println!("  zmq_smoke_client [--endpoint tcp://host:port] align-afe");
     println!("default endpoint: {DEFAULT_ENDPOINT}");
 }

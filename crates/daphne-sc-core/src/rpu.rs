@@ -7,6 +7,8 @@ pub struct AfeCommandReply {
     pub accepted: bool,
     pub applied: bool,
     pub readback: Option<u32>,
+    pub fault_code: u32,
+    pub context_code: u32,
     pub message: String,
 }
 

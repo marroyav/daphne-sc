@@ -139,6 +139,9 @@ pub enum AfeCommand {
         name: String,
         value: u16,
     },
+    ReadAlignment {
+        afe: AfeId,
+    },
     ConfigureFrontend {
         afes: Vec<AfeFrontendConfig>,
         channels: Vec<ChannelFrontendConfig>,

@@ -4,7 +4,7 @@ use crate::status_collector::collect_slow_control_status;
 use crate::v2;
 use daphne_sc_core::afe::{
     AdcConfig, AfeCommand, AfeFrontendConfig, AfeId, ChannelFrontendConfig, ChannelId,
-    ChannelTarget, LnaConfig, PgaConfig,
+    ChannelTarget, LnaConfig, PgaConfig, AFE_COUNT,
 };
 use daphne_sc_core::rpu::{AfeCommandReply, RpuAfeTransport, RpuError, RpuLinkStatus};
 use daphne_sc_core::status::{
@@ -302,7 +302,7 @@ fn handle_not_implemented(message_type: MessageTypeV2) -> Vec<u8> {
     }
 }
 
-fn handle_configure_fe<T: RpuAfeTransport>(payload: &[u8], rpu: &mut T) -> Vec<u8> {
+fn handle_configure_fe<T: RpuAfeTransport>(payload: &[u8], _rpu: &mut T) -> Vec<u8> {
     let req = match decode::<pb::ConfigureRequest>(payload) {
         Ok(req) => req,
         Err(err) => {
@@ -313,20 +313,22 @@ fn handle_configure_fe<T: RpuAfeTransport>(payload: &[u8], rpu: &mut T) -> Vec<u
         }
     };
 
-    let command = match configure_command(req) {
-        Ok(command) => command,
-        Err(err) => {
-            return v2::encode(pb::ConfigureResponse {
-                success: false,
-                message: err,
-            });
-        }
-    };
+    let afe_count = req.afes.len();
+    let channel_count = req.channels.len();
+    if let Err(err) = configure_command(req) {
+        return v2::encode(pb::ConfigureResponse {
+            success: false,
+            message: err,
+        });
+    }
 
-    let outcome = submit(rpu, command);
+    let message = format!(
+        "RPU interlock active: code 2; ConfigureFe is disabled until AFE power/reset sequencing is validated (afes={}, channels={})",
+        afe_count, channel_count
+    );
     v2::encode(pb::ConfigureResponse {
-        success: outcome.success,
-        message: outcome.message,
+        success: false,
+        message,
     })
 }
 
@@ -1040,13 +1042,75 @@ fn handle_align_afe<T: RpuAfeTransport>(payload: &[u8], rpu: &mut T) -> Vec<u8> 
         });
     }
 
-    let outcome = submit(rpu, AfeCommand::Align);
+    let mut outcome = submit(rpu, AfeCommand::Align);
+    outcome.message = alignment_message(&outcome);
+    let (delay, bitslip) = if outcome.transport_error {
+        (Vec::new(), Vec::new())
+    } else {
+        read_alignment_vectors(rpu)
+    };
+
     v2::encode(pb::CmdAlignAfEsResponse {
         success: outcome.success,
         message: outcome.message,
-        delay: Vec::new(),
-        bitslip: Vec::new(),
+        delay,
+        bitslip,
     })
+}
+
+fn read_alignment_vectors<T: RpuAfeTransport>(rpu: &mut T) -> (Vec<u32>, Vec<u32>) {
+    let mut delay = Vec::new();
+    let mut bitslip = Vec::new();
+
+    for afe_board in 0..AFE_COUNT {
+        let Ok(afe) = AfeId::from_board(afe_board) else {
+            continue;
+        };
+        let outcome = submit(rpu, AfeCommand::ReadAlignment { afe });
+        let Some(readback) = outcome.readback else {
+            continue;
+        };
+        if readback & 0x8000_0000 == 0 {
+            continue;
+        }
+        delay.push(readback & 0xFFFF);
+        bitslip.push((readback >> 16) & 0x0F);
+    }
+
+    (delay, bitslip)
+}
+
+fn alignment_message(outcome: &SubmitOutcome) -> String {
+    let mut message = outcome.message.clone();
+    if outcome.fault_code != 0 && !message.contains("code") {
+        message.push_str(&format!("; fault code {}", outcome.fault_code));
+    }
+    if let Some(context) = describe_alignment_context(outcome.context_code) {
+        message.push_str("; ");
+        message.push_str(&context);
+    }
+    message
+}
+
+fn describe_alignment_context(context: u32) -> Option<String> {
+    if context == 0 {
+        return None;
+    }
+    let afe = context & 0xFF;
+    let stage = (context >> 8) & 0xFF;
+    let stage_name = match stage {
+        1 => "reset",
+        2 => "delayctrl-ready",
+        3 => "delay-scan",
+        4 => "bitslip-scan",
+        5 => "vtc-restore",
+        _ => "unknown",
+    };
+    if afe == 0xFF {
+        Some(format!("alignment failed at {stage_name}"))
+    } else {
+        Some(format!("alignment failed at {stage_name} for AFE {afe}"))
+    }
 }
 
 fn handle_write_afe_function<T: RpuAfeTransport>(payload: &[u8], rpu: &mut T) -> Vec<u8> {
@@ -1088,6 +1152,9 @@ struct SubmitOutcome {
     success: bool,
     message: String,
     readback: Option<u32>,
+    fault_code: u32,
+    context_code: u32,
+    transport_error: bool,
 }
 
 fn submit<T: RpuAfeTransport>(rpu: &mut T, command: AfeCommand) -> SubmitOutcome {
@@ -1096,6 +1163,9 @@ fn submit<T: RpuAfeTransport>(rpu: &mut T, command: AfeCommand) -> SubmitOutcome
             success: false,
             message: err.to_string(),
             readback: None,
+            fault_code: 0,
+            context_code: 0,
+            transport_error: false,
         };
     }
 
@@ -1104,11 +1174,17 @@ fn submit<T: RpuAfeTransport>(rpu: &mut T, command: AfeCommand) -> SubmitOutcome
             success: reply.accepted && reply.applied,
             message: reply.message,
             readback: reply.readback,
+            fault_code: reply.fault_code,
+            context_code: reply.context_code,
+            transport_error: false,
         },
         Err(err) => SubmitOutcome {
             success: false,
             message: format!("{RPU_FAIL_PREFIX}{err}"),
             readback: None,
+            fault_code: 0,
+            context_code: 0,
+            transport_error: true,
         },
     }
 }

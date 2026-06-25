@@ -39,6 +39,7 @@ pub enum RpuWireOp {
     ConfigureChannel = 19,
     ApplyConfigureFrontend = 20,
     WriteFunction = 21,
+    ReadAlignment = 22,
 }
 
 impl TryFrom<u16> for RpuWireOp {
@@ -68,6 +69,7 @@ impl TryFrom<u16> for RpuWireOp {
             19 => Ok(Self::ConfigureChannel),
             20 => Ok(Self::ApplyConfigureFrontend),
             21 => Ok(Self::WriteFunction),
+            22 => Ok(Self::ReadAlignment),
             _ => Err(RpuWireError::UnknownOp(value)),
         }
     }
@@ -272,6 +274,10 @@ impl RpuWireCommand {
                 wire.set_afe(*afe);
                 wire.value = u32::from(*value);
                 set_function_name(&mut wire.payload, name)?;
+            }
+            AfeCommand::ReadAlignment { afe } => {
+                wire.op = RpuWireOp::ReadAlignment;
+                wire.set_afe(*afe);
             }
             AfeCommand::ConfigureFrontend { .. } => {
                 return Err(RpuWireError::UnsupportedCommand(

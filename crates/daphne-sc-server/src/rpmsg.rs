@@ -115,7 +115,7 @@ impl RpuAfeTransport for RpmsgAfeTransport {
             RpuWireStatus::Fault => (
                 false,
                 false,
-                format!("RPU fault active: code {}", reply.fault_code),
+                format_reply_detail("RPU fault active", &reply),
             ),
             RpuWireStatus::Timeout => (true, false, "RPU command timed out".to_string()),
         };
@@ -124,6 +124,8 @@ impl RpuAfeTransport for RpmsgAfeTransport {
             accepted,
             applied,
             readback: reply.readback,
+            fault_code: reply.fault_code,
+            context_code: reply.interlock_code,
             message,
         })
     }
@@ -143,6 +145,17 @@ impl RpmsgAfeTransport {
         self.next_sequence = self.next_sequence.saturating_add(count).max(1);
         first
     }
+}
+
+fn format_reply_detail(prefix: &str, reply: &RpuWireReply) -> String {
+    let mut message = format!("{prefix}: code {}", reply.fault_code);
+    if let Some(readback) = reply.readback {
+        message.push_str(&format!(" readback=0x{readback:08x}"));
+    }
+    if reply.interlock_code != 0 {
+        message.push_str(&format!(" context=0x{:08x}", reply.interlock_code));
+    }
+    message
 }
 
 fn wait_readable(fd: i32, timeout: Duration) -> Result<(), RpuError> {
