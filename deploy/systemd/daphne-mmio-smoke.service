@@ -1,0 +1,13 @@
+[Unit]
+Description=DAPHNE read-only FPGA MMIO smoke test
+After=firmware.service
+Requires=firmware.service
+ConditionPathExists=/dev/mem
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/firmware
+EnvironmentFile=-/etc/daphne-board.env
+EnvironmentFile=-/etc/daphne-sc.env
+ExecStart=/usr/local/bin/mmio_smoke --skip-spy
+TimeoutStartSec=30

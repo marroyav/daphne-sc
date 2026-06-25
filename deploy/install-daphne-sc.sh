@@ -48,7 +48,7 @@ else
     BIN_DIR="$ROOT_DIR/target/release"
 fi
 
-for binary in daphne-sc-server clockchip_tool; do
+for binary in daphne-sc-server clockchip_tool mmio_smoke; do
     if [[ ! -x "$BIN_DIR/$binary" ]]; then
         echo "missing executable: $BIN_DIR/$binary" >&2
         echo "build first with: cargo build --release --bins" >&2
@@ -58,6 +58,7 @@ done
 
 install -Dm755 "$BIN_DIR/daphne-sc-server" "$PREFIX/bin/daphne-sc-server"
 install -Dm755 "$BIN_DIR/clockchip_tool" "$PREFIX/bin/clockchip_tool"
+install -Dm755 "$BIN_DIR/mmio_smoke" "$PREFIX/bin/mmio_smoke"
 
 if [[ ! -e "$ENV_FILE" ]]; then
     install -Dm644 "$ROOT_DIR/deploy/daphne-sc.env.example" "$ENV_FILE"
@@ -66,10 +67,11 @@ fi
 if [[ "$INSTALL_UNITS" -eq 1 ]]; then
     install -Dm644 "$ROOT_DIR/deploy/systemd/daphne-sc.service" "$UNIT_DIR/daphne-sc.service"
     install -Dm644 "$ROOT_DIR/deploy/systemd/clockchip.service" "$UNIT_DIR/clockchip.service"
+    install -Dm644 "$ROOT_DIR/deploy/systemd/daphne-mmio-smoke.service" "$UNIT_DIR/daphne-mmio-smoke.service"
     systemctl daemon-reload
 fi
 
-echo "installed daphne-sc-server and clockchip_tool under $PREFIX/bin"
+echo "installed daphne-sc-server, clockchip_tool, and mmio_smoke under $PREFIX/bin"
 if [[ "$INSTALL_UNITS" -eq 1 ]]; then
     echo "installed systemd units under $UNIT_DIR"
 fi
