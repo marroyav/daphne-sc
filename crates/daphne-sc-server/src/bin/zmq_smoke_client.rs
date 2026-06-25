@@ -79,9 +79,10 @@ fn main() -> Result<()> {
             biasctrl,
             vgain,
             offset,
+            adc_resolution,
         } => request_envelope(
             pb::MessageTypeV2::Mt2ConfigureFeReq as i32,
-            minimal_configure_request(biasctrl, vgain, offset).encode_to_vec(),
+            minimal_configure_request(biasctrl, vgain, offset, adc_resolution).encode_to_vec(),
         ),
         Command::AlignAfe => request_envelope(
             pb::MessageTypeV2::Mt2AlignAfeReq as i32,
@@ -282,7 +283,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn minimal_configure_request(biasctrl: u32, vgain: u32, offset: u32) -> pb::ConfigureRequest {
+fn minimal_configure_request(
+    biasctrl: u32,
+    vgain: u32,
+    offset: u32,
+    adc_resolution: bool,
+) -> pb::ConfigureRequest {
     let channels = (0..40)
         .map(|channel| pb::ChannelConfig {
             id: channel,
@@ -297,14 +303,14 @@ fn minimal_configure_request(biasctrl: u32, vgain: u32, offset: u32) -> pb::Conf
             attenuators: vgain,
             v_bias: 0,
             adc: Some(pb::AdcConfig {
-                resolution: true,
+                resolution: adc_resolution,
                 output_format: true,
                 sb_first: false,
             }),
             pga: Some(pb::PgaConfig {
                 lpf_cut_frequency: 4,
                 integrator_disable: true,
-                gain: true,
+                gain: false,
             }),
             lna: Some(pb::LnaConfig {
                 clamp: 0,
@@ -390,6 +396,7 @@ enum Command {
         biasctrl: u32,
         vgain: u32,
         offset: u32,
+        adc_resolution: bool,
     },
     AlignAfe,
 }
@@ -481,13 +488,14 @@ impl Args {
                 }
             }
             Some("configure-min") => {
-                if positionals.len() > 4 {
-                    bail!("configure-min accepts at most: biasctrl vgain offset");
+                if positionals.len() > 5 {
+                    bail!("configure-min accepts at most: biasctrl vgain offset adc_resolution");
                 }
                 Command::ConfigureMin {
                     biasctrl: parse_optional_u32(&positionals, 1, 0)?,
                     vgain: parse_optional_u32(&positionals, 2, 1600)?,
                     offset: parse_optional_u32(&positionals, 3, 2275)?,
+                    adc_resolution: parse_optional_bool(&positionals, 4, true)?,
                 }
             }
             Some("align-afe") => Command::AlignAfe,
@@ -508,6 +516,13 @@ fn parse_bool(value: &str) -> Result<bool> {
         "0" | "false" | "FALSE" | "off" | "OFF" => Ok(false),
         _ => bail!("invalid boolean: {value}; expected true/false or 1/0"),
     }
+}
+
+fn parse_optional_bool(positionals: &[String], index: usize, default: bool) -> Result<bool> {
+    positionals
+        .get(index)
+        .map(|value| parse_bool(value))
+        .unwrap_or(Ok(default))
 }
 
 fn parse_optional_u32(positionals: &[String], index: usize, default: u32) -> Result<u32> {
@@ -539,7 +554,7 @@ fn print_help() {
     println!("  zmq_smoke_client [--endpoint tcp://host:port] do-afe-reset");
     println!("  zmq_smoke_client [--endpoint tcp://host:port] set-afe-power <true|false>");
     println!("  zmq_smoke_client [--endpoint tcp://host:port] write-afe-function <afeBlock> <function> <configValue>");
-    println!("  zmq_smoke_client [--endpoint tcp://host:port] configure-min [biasctrl=0] [vgain=1600] [offset=2275]");
+    println!("  zmq_smoke_client [--endpoint tcp://host:port] configure-min [biasctrl=0] [vgain=1600] [offset=2275] [adc_resolution=true]");
     println!("  zmq_smoke_client [--endpoint tcp://host:port] align-afe");
     println!("default endpoint: {DEFAULT_ENDPOINT}");
 }
