@@ -21,6 +21,60 @@ without a sanitizer finding. After that hardening pass, the source was rebuilt
 in the dated CERN staging directory and both the contract test and live
 namespace smoke were repeated successfully before port 4841 was closed.
 
+## Native v8 protobuf sidecar validation
+
+The additive board producer and bridge path were subsequently tested end to
+end without changing the production service:
+
+```text
+DAPHNE-015 telemetry-only sidecar :40002
+  -> ControlEnvelopeV2 + daphne.telemetry.v8/1.0
+  -> bridge on np04-onl-004 :4842
+  -> urn:dune:pds:daphne OPC-UA namespace
+```
+
+The ARM64 sidecar was built against the target protobuf/ZeroMQ ABI, required no
+newer than `GLIBC_2.34` and `GLIBCXX_3.4.30`, and was checksum-verified after
+transfer. It used `--telemetry-only`, which skips I2C/SPI peripheral
+initialization and exposes only the read-only v8 snapshot command.
+
+One snapshot contained exactly 1,370 unique board-owned points:
+
+```text
+points=1370 good=349 unavailable=1021 invalid=0
+```
+
+The OPC-UA conformance check again passed all nodes with every method disabled:
+
+```text
+namespace=urn:dune:pds:daphne ns=3 checked=1437 failures=0
+read_nodes=1416 method_nodes=21
+```
+
+Representative native readbacks were:
+
+```text
+Status.Connected                         Good  true
+Bridge.Version                           Good  0.4.0
+Firmware.GitCommit                       Good  0x10B3D2A
+Host.CpuLoad1Minute                      Good  0.450195
+Host.MemoryAvailableBytes                Good  3818758144
+Network.Interfaces.eth0.Ipv4Address      Good  10.73.137.16
+Network.Interfaces.eth0.Carrier          Good  true
+Timing.Mmcm0Locked                       Good  true
+Thermal.Fans.0.PwmCommand                Good  255
+HDMezz.0.BlockEnabled                    BadWaitingForInitialData
+Authority.ExternalActivityPermit         BadWaitingForInitialData
+```
+
+The numerical values are observations from this smoke test, not approved
+limits. HD-mezzanine data was intentionally unavailable because the sidecar did
+not initialize or probe the I2C peripherals. The authority point remained
+unavailable because it belongs to SC/DPS, not the DAPHNE producer.
+
+Both test processes were stopped. The final check showed only production PID
+2441 listening on port 40001; ports 40002 and 4842 were closed.
+
 ## Contract and namespace results
 
 The staged build used the proposed-v8 exports:
@@ -88,8 +142,8 @@ Authority.ExternalActivityConflict       BadWaitingForInitialData
 - Configure production certificates and encrypted OPC-UA security policies.
 - Supply authenticated DAQ, SC, DPS, and expert identities.
 - Connect the SC/DPS external-activity admission source and enforce its guard.
-- Connect the richer Rust slow-control status endpoint for host, service, I2C,
-  PMBus, timing, RPU, fan, SFP, and channel data.
+- Commission the richer native v8 collectors in the persistent board service;
+  the sidecar test intentionally left live I2C/SPI monitoring disabled.
 - Validate the final instance inventories from HWDB, especially SFPs, sensors,
   services, I2C devices, and HD/VD channel counts.
 - Add approved alarm/interlock limits and historization configuration.

@@ -8,9 +8,11 @@
 
 #include "daphneV3_high_level_confs.pb.h"
 #include "daphneV3_low_level_confs.pb.h"
+#include "daphne_v8_telemetry.pb.h"
 #include "registry.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -523,6 +525,8 @@ struct DaphneStatus {
     std::string errors = "[]";
     std::string lastUpdate;
     uint64_t updateTimeNs = 0;
+    bool telemetryV8 = false;
+    daphne::telemetry::v8::ReadTelemetrySnapshotResponse telemetry;
 };
 
 struct PowerStatus {
@@ -539,10 +543,11 @@ struct PowerStatus {
 
 class DaphneClient {
   public:
-    DaphneClient(zmq::context_t &context, bool enabled, bool fake, std::string endpoint,
-                 std::string route, int timeoutMs)
+    DaphneClient(zmq::context_t &context, bool enabled, bool fake, std::string boardId,
+                 std::string endpoint, std::string route, int timeoutMs)
         : enabled_(enabled),
           fake_(fake),
+          boardId_(std::move(boardId)),
           endpoint_(std::move(endpoint)),
           route_(std::move(route)),
           timeoutMs_(timeoutMs),
@@ -580,6 +585,13 @@ class DaphneClient {
         if(fake_)
             return fakeStatus();
 
+        std::string telemetryError;
+        try {
+            return pollTelemetryV8();
+        } catch(const std::exception &err) {
+            telemetryError = err.what();
+        }
+
         try {
             daphne::TestRegRequest testReq;
             const auto testEnv = sendRequest(
@@ -612,7 +624,8 @@ class DaphneClient {
             status.success = true;
             status.testRegValue = testResp.value();
             status.testRegHex = hex64(testResp.value());
-            status.message = "legacy daphneServer V2 readback ok";
+            status.message = "legacy daphneServer V2 readback ok; v8 unavailable: " +
+                             telemetryError;
             status.firmwareBuildId = "legacy-daphneServer-v2";
             status.vBias0 = info.v_bias_0();
             status.vBias1 = info.v_bias_1();
@@ -630,7 +643,8 @@ class DaphneClient {
             status.rails = railsJson(info);
             status.errors = "[]";
         } catch(const std::exception &err) {
-            status.message = std::string("DAPHNE poll failed: ") + err.what();
+            status.message = std::string("DAPHNE poll failed: v8=") + telemetryError +
+                             "; legacy=" + err.what();
         }
         return status;
     }
@@ -691,6 +705,118 @@ class DaphneClient {
     }
 
   private:
+    DaphneStatus pollTelemetryV8() {
+        daphne::telemetry::v8::ReadTelemetrySnapshotRequest request;
+        request.set_detail(daphne::telemetry::v8::TELEMETRY_DETAIL_STANDARD);
+        request.set_request_sequence(nextTelemetrySequence_++);
+        request.set_include_unavailable(true);
+        const auto envelope = sendRequest(
+            request, daphne::MT2_READ_TELEMETRY_SNAPSHOT_REQ,
+            daphne::MT2_READ_TELEMETRY_SNAPSHOT_RESP);
+        daphne::telemetry::v8::ReadTelemetrySnapshotResponse response;
+        if(!response.ParseFromString(envelope.payload()))
+            throw std::runtime_error("bad ReadTelemetrySnapshotResponse payload");
+        if(!response.success())
+            throw std::runtime_error("telemetry response failed: " + response.message());
+        if(response.schema_major() != 1)
+            throw std::runtime_error("unsupported telemetry schema major " +
+                                     std::to_string(response.schema_major()));
+        if(response.schema_source_sha256().size() != 64 ||
+           !std::all_of(response.schema_source_sha256().begin(),
+                        response.schema_source_sha256().end(),
+                        [](unsigned char value) { return std::isxdigit(value) != 0; }))
+            throw std::runtime_error("missing or malformed telemetry schema source hash");
+        if(response.board_id() != boardId_)
+            throw std::runtime_error("telemetry board_id mismatch: expected " + boardId_ +
+                                     ", got " + response.board_id());
+        if(response.request_sequence() != request.request_sequence())
+            throw std::runtime_error("telemetry request_sequence mismatch");
+        if(response.points_size() == 0)
+            throw std::runtime_error("telemetry response contains no points");
+
+        std::set<std::string> nodeIds;
+        const std::string boardPrefix = "DAPHNE.Boards." + boardId_ + ".";
+        size_t good = 0;
+        size_t unavailable = 0;
+        size_t invalid = 0;
+        for(const auto &point : response.points()) {
+            if(point.node_id().rfind(boardPrefix, 0) != 0)
+                throw std::runtime_error("telemetry point is outside configured board: " +
+                                         point.node_id());
+            if(!nodeIds.insert(point.node_id()).second)
+                throw std::runtime_error("duplicate telemetry NodeId: " + point.node_id());
+            const bool hasValue = point.value_case() !=
+                                  daphne::telemetry::v8::TelemetryPoint::VALUE_NOT_SET;
+            if((point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD ||
+                point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_STALE) &&
+               !hasValue)
+                throw std::runtime_error("telemetry point lacks value: " + point.node_id());
+            if((point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_UNAVAILABLE ||
+                point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_NOT_APPLICABLE) &&
+               hasValue)
+                throw std::runtime_error("unavailable telemetry point carries a value: " +
+                                         point.node_id());
+            switch(point.quality()) {
+            case daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD: ++good; break;
+            case daphne::telemetry::v8::TELEMETRY_QUALITY_UNAVAILABLE: ++unavailable; break;
+            case daphne::telemetry::v8::TELEMETRY_QUALITY_INVALID: ++invalid; break;
+            default: break;
+            }
+        }
+
+        DaphneStatus status;
+        status.enabled = enabled_;
+        status.connected = true;
+        status.success = true;
+        status.telemetryV8 = true;
+        status.telemetry = std::move(response);
+        status.lastUpdate = nowIsoLike();
+        status.updateTimeNs = status.telemetry.snapshot_time_unix_ns() != 0
+                                  ? status.telemetry.snapshot_time_unix_ns()
+                                  : nowNs();
+        status.errorCount = static_cast<int>(invalid);
+        std::ostringstream message;
+        message << "v8 telemetry ok: points=" << status.telemetry.points_size()
+                << " good=" << good << " unavailable=" << unavailable
+                << " invalid=" << invalid;
+        status.message = message.str();
+
+        auto findPoint = [&](const std::string &suffix)
+            -> const daphne::telemetry::v8::TelemetryPoint * {
+            const std::string id = boardPrefix + suffix;
+            for(const auto &point : status.telemetry.points()) {
+                if(point.node_id() == id &&
+                   point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD)
+                    return &point;
+            }
+            return nullptr;
+        };
+        if(const auto *point = findPoint("Firmware.Loaded");
+           point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kBooleanValue)
+            status.firmwareLoaded = point->boolean_value();
+        if(const auto *point = findPoint("Firmware.BuildId");
+           point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kStringValue)
+            status.firmwareBuildId = point->string_value();
+        if(const auto *point = findPoint("Timing.Mmcm0Locked");
+           point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kBooleanValue)
+            status.mmcm0Locked = point->boolean_value();
+        if(const auto *point = findPoint("Timing.Mmcm1Locked");
+           point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kBooleanValue)
+            status.mmcm1Locked = point->boolean_value();
+        const std::array<double DaphneStatus::*, 5> biasMembers{{
+            &DaphneStatus::vBias0, &DaphneStatus::vBias1, &DaphneStatus::vBias2,
+            &DaphneStatus::vBias3, &DaphneStatus::vBias4,
+        }};
+        for(size_t afe = 0; afe < biasMembers.size(); ++afe) {
+            if(const auto *point = findPoint("AFE.Blocks." + std::to_string(afe) +
+                                             ".BiasVoltage");
+               point && point->value_case() ==
+                            daphne::telemetry::v8::TelemetryPoint::kDoubleValue)
+                status.*biasMembers[afe] = point->double_value();
+        }
+        return status;
+    }
+
     template <typename Request, typename Response>
     std::string transactJson(const std::string &operation, const std::string &requestJson,
                              daphne::MessageTypeV2 requestType,
@@ -871,11 +997,13 @@ class DaphneClient {
 
     bool enabled_;
     bool fake_;
+    std::string boardId_;
     std::string endpoint_;
     std::string route_;
     int timeoutMs_;
     zmq::socket_t socket_;
     uint64_t nextMsgId_ = 1;
+    uint64_t nextTelemetrySequence_ = 1;
 };
 
 speed_t baudToTermios(int baud) {
@@ -1309,6 +1437,7 @@ struct BridgeState {
     std::vector<std::thread> pollers;
     std::vector<std::unique_ptr<MethodContext>> methodContexts;
     std::set<std::string> registryNodeIds;
+    std::map<std::string, pds::registry::ValueType> registryNodeTypes;
     std::set<std::string> canonicalObjectIds;
 };
 
@@ -1465,6 +1594,7 @@ void addCanonicalRegistryVariable(UA_Server *server, BridgeState &state,
     if(rc != UA_STATUSCODE_GOOD)
         throw std::runtime_error("failed to add canonical registry variable " + node.nodeId);
     state.registryNodeIds.insert(node.nodeId);
+    state.registryNodeTypes[node.nodeId] = node.entry.valueType;
     writeDataValue(server, state.controlNs, node.nodeId,
                    makeRegistryInitialValue(node.entry.valueType),
                    UA_STATUSCODE_BADWAITINGFORINITIALDATA);
@@ -1631,6 +1761,99 @@ void writeCanonical(UA_Server *server, BridgeState &state, const std::string &id
     writeDataValue(server, state.controlNs, id, value, status, sourceTimestamp);
 }
 
+UA_StatusCode telemetryQualityStatus(
+    daphne::telemetry::v8::TelemetryQuality quality) {
+    switch(quality) {
+    case daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD:
+        return UA_STATUSCODE_GOOD;
+    case daphne::telemetry::v8::TELEMETRY_QUALITY_STALE:
+        return UA_STATUSCODE_UNCERTAINLASTUSABLEVALUE;
+    case daphne::telemetry::v8::TELEMETRY_QUALITY_INVALID:
+        return UA_STATUSCODE_BADINVALIDSTATE;
+    case daphne::telemetry::v8::TELEMETRY_QUALITY_UNAVAILABLE:
+        return UA_STATUSCODE_BADWAITINGFORINITIALDATA;
+    case daphne::telemetry::v8::TELEMETRY_QUALITY_NOT_APPLICABLE:
+        return UA_STATUSCODE_BADNOTSUPPORTED;
+    case daphne::telemetry::v8::TELEMETRY_QUALITY_UNSPECIFIED:
+    default:
+        return UA_STATUSCODE_BADINVALIDSTATE;
+    }
+}
+
+UA_Variant telemetryVariant(const daphne::telemetry::v8::TelemetryPoint &point,
+                            pds::registry::ValueType expectedType,
+                            bool &typeMatches) {
+    typeMatches = true;
+    using Point = daphne::telemetry::v8::TelemetryPoint;
+    switch(expectedType) {
+    case pds::registry::ValueType::Boolean:
+        if(point.value_case() == Point::kBooleanValue)
+            return makeVariant(point.boolean_value());
+        break;
+    case pds::registry::ValueType::Integer:
+        if(point.value_case() == Point::kIntegerValue)
+            return makeVariant(static_cast<int32_t>(point.integer_value()));
+        break;
+    case pds::registry::ValueType::Long:
+        if(point.value_case() == Point::kLongValue)
+            return makeLongVariant(point.long_value());
+        break;
+    case pds::registry::ValueType::Double:
+        if(point.value_case() == Point::kDoubleValue)
+            return makeVariant(point.double_value());
+        break;
+    case pds::registry::ValueType::String:
+        if(point.value_case() == Point::kStringValue)
+            return makeVariant(point.string_value());
+        break;
+    case pds::registry::ValueType::DateTime:
+        if(point.value_case() == Point::kDatetimeUnixNs && point.datetime_unix_ns() >= 0)
+            return makeDateTimeVariant(
+                unixNsToUaDateTime(static_cast<uint64_t>(point.datetime_unix_ns())));
+        break;
+    }
+    if(point.value_case() != Point::VALUE_NOT_SET)
+        typeMatches = false;
+    return makeRegistryInitialValue(expectedType);
+}
+
+size_t applyTelemetrySnapshot(
+    UA_Server *server, BridgeState &state,
+    const daphne::telemetry::v8::ReadTelemetrySnapshotResponse &snapshot,
+    bool transportCurrent) {
+    size_t translationErrors = 0;
+    std::set<std::string> seen;
+    for(const auto &point : snapshot.points()) {
+        if(!seen.insert(point.node_id()).second) {
+            ++translationErrors;
+            continue;
+        }
+        const auto expected = state.registryNodeTypes.find(point.node_id());
+        if(expected == state.registryNodeTypes.end()) {
+            ++translationErrors;
+            continue;
+        }
+        bool typeMatches = true;
+        UA_Variant value = telemetryVariant(point, expected->second, typeMatches);
+        UA_StatusCode status = telemetryQualityStatus(point.quality());
+        const bool missingGoodValue =
+            point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD &&
+            point.value_case() == daphne::telemetry::v8::TelemetryPoint::VALUE_NOT_SET;
+        if(!typeMatches || missingGoodValue) {
+            status = UA_STATUSCODE_BADTYPEMISMATCH;
+            ++translationErrors;
+        } else if(!transportCurrent && status == UA_STATUSCODE_GOOD) {
+            status = UA_STATUSCODE_UNCERTAINLASTUSABLEVALUE;
+        }
+        const uint64_t sourceNs = point.sample_time_unix_ns() != 0
+                                      ? point.sample_time_unix_ns()
+                                      : snapshot.snapshot_time_unix_ns();
+        writeCanonical(server, state, point.node_id(), std::move(value), status,
+                       sourceNs == 0 ? 0 : unixNsToUaDateTime(sourceNs));
+    }
+    return translationErrors;
+}
+
 void updateNodes(UA_Server *server, BridgeState &state) {
     static int32_t heartbeat = 0;
     ++heartbeat;
@@ -1749,10 +1972,14 @@ void updateNodes(UA_Server *server, BridgeState &state) {
                        makeLongVariant(static_cast<int64_t>(pollErrorCount)),
                        UA_STATUSCODE_GOOD, currentTimestamp);
         writeCanonical(server, state, base + "Bridge.BackendProtocolVersion",
-                       makeVariant(std::string("ControlEnvelopeV2")),
+                       makeVariant(measurement.telemetryV8
+                                       ? std::string("ControlEnvelopeV2+daphne.telemetry.v8/1.0")
+                                       : std::string("ControlEnvelopeV2")),
                        UA_STATUSCODE_GOOD, currentTimestamp);
         writeCanonical(server, state, base + "Bridge.BackendCompatibilityState",
-                       makeVariant(std::string("LegacyReadbackSubset")),
+                       makeVariant(measurement.telemetryV8
+                                       ? std::string("ProposedV8Telemetry")
+                                       : std::string("LegacyReadbackSubset")),
                        UA_STATUSCODE_GOOD, currentTimestamp);
 
         const double biasValues[] = {
@@ -1779,6 +2006,15 @@ void updateNodes(UA_Server *server, BridgeState &state) {
             writeCanonical(server, state, base + "Power.BoardRails." + rail + ".Status",
                            makeVariant(quality), measurementStatus,
                            measurementTimestamp);
+        }
+        if(measurement.telemetryV8) {
+            const size_t translationErrors = applyTelemetrySnapshot(
+                server, state, measurement.telemetry, currentGood);
+            if(translationErrors != 0) {
+                std::cerr << "warning: rejected " << translationErrors
+                          << " malformed or unknown v8 telemetry points for DAPHNE "
+                          << board.id << "\n";
+            }
         }
     }
 
@@ -2168,6 +2404,7 @@ int main(int argc, char **argv) {
                 state.daphneContext,
                 state.config.daphneEnabled,
                 state.config.daphneFake,
+                board.id,
                 board.endpoint,
                 state.config.daphneRoutes.at(id),
                 state.config.daphneTimeoutMs);

@@ -4,7 +4,7 @@ This directory contains the first C++ vertical-slice bridge for the NP04
 DAPHNE/PDS slow-controls setup:
 
 ```text
-legacy DAPHNE daphneServer ZMQ/protobuf + USB power supply -> C++ OPC-UA server
+DAPHNE daphneServer ZMQ/protobuf + USB power supply -> C++ OPC-UA server
 ```
 
 It is intentionally separate from the existing Rust `daphne-sc-server`. The
@@ -57,7 +57,7 @@ opcua-bridge/tools/onl_bridge.sh fake
 ```
 
 To stage the Interface2 exports and run the reversible DAPHNE-015 v8 profile
-on port 4841, use:
+on port 4842, use:
 
 ```sh
 REMOTE_DIR=daphne-sc-opcua-v8-stage \
@@ -120,6 +120,12 @@ The DAPHNE provider talks to the deployed legacy C++ `daphneServer` on
 - `MT2_READ_GENERAL_INFO_REQ` / `MT2_READ_GENERAL_INFO_RESP` for VBIAS, rail,
   and temperature readbacks.
 
+It first requests the native proposed-v8 snapshot with
+`MT2_READ_TELEMETRY_SNAPSHOT_REQ`/`RESP` (`1002`/`1003`). When the board does
+not implement that additive command, the two legacy reads above remain the
+compatibility fallback. The bridge validates schema major, board ID, request
+sequence, board prefix, and duplicate NodeIds before publishing a v8 snapshot.
+
 Power-supply monitoring uses SCPI-style USBTMC or serial commands.
 
 The workbook-driven v8 draft namespace is `urn:dune:pds:daphne`. Set
@@ -146,7 +152,7 @@ After starting the server, verify the complete namespace and declared types:
 
 ```sh
 build/opcua-bridge/pds-opcua-registry-smoke \
-  opc.tcp://localhost:4841 contract/tag_list.csv 015 \
+  opc.tcp://localhost:4842 contract/tag_list.csv 015 \
   --expect-writes-disabled
 ```
 
@@ -226,9 +232,10 @@ writes disabled.
 ## DAPHNE-015 v8 Test
 
 `config/np04-daphne-015-v8-test.example.conf` is a read-only profile for
-running the bridge on `np04-onl-004` against the legacy DAPHNE service on
-`NP04-DAPHNE-015.CERN.CH:40001`. It listens on test port 4841 and does not
-replace or restart `daphne.service` on the board.
+running the bridge on `np04-onl-004` against the telemetry-only DAPHNE sidecar
+on `NP04-DAPHNE-015.CERN.CH:40002`. It listens on test port 4842 and does not
+replace or restart `daphne.service` on the board. The production service stays
+on port 40001.
 
 ## NP04 Hardware Probe
 

@@ -26,6 +26,7 @@ file(MAKE_DIRECTORY "${PROTO_OUT_DIR}")
 set(PROTO_FILES
     "${REPO_ROOT}/proto/upstream/daphneV3_high_level_confs.proto"
     "${REPO_ROOT}/proto/upstream/daphneV3_low_level_confs.proto"
+    "${REPO_ROOT}/proto/upstream/daphne_v8_telemetry.proto"
 )
 
 set(GENERATED_PROTO_SRCS)

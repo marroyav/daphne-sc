@@ -1,0 +1,105 @@
+// Additive, read-only DAPHNE telemetry contract for the proposed DAQ/PDS ICD v8.
+//
+// The DAPHNE service produces canonical board-owned values. A ZMQ client in the
+// OPC-UA bridge requests a coherent snapshot and maps each point to the string
+// NodeId in the workbook registry. DAQ run context, SC/DPS permits, HWDB
+// approvals, and OPC-UA gateway health are deliberately not fabricated here;
+// those values are supplied by their authoritative services at the gateway.
+//
+// Compatibility rules:
+//   * field numbers and enum values are append-only after release;
+//   * a missing value in TelemetryPoint means unavailable, never numeric zero;
+//   * quality and timestamps belong to each point, because collectors have
+//     different cadences;
+//   * node_id is the canonical string identifier without the nsu=...;s= prefix.
+
+syntax = "proto3";
+
+package daphne.telemetry.v8;
+
+enum TelemetryDetail {
+  TELEMETRY_DETAIL_UNSPECIFIED = 0;
+  TELEMETRY_DETAIL_SUMMARY = 1;
+  TELEMETRY_DETAIL_STANDARD = 2;
+  TELEMETRY_DETAIL_DIAGNOSTIC = 3;
+}
+
+enum TelemetryQuality {
+  TELEMETRY_QUALITY_UNSPECIFIED = 0;
+  TELEMETRY_QUALITY_GOOD = 1;
+  TELEMETRY_QUALITY_STALE = 2;
+  TELEMETRY_QUALITY_INVALID = 3;
+  TELEMETRY_QUALITY_UNAVAILABLE = 4;
+  TELEMETRY_QUALITY_NOT_APPLICABLE = 5;
+}
+
+enum DiagnosticSeverity {
+  DIAGNOSTIC_SEVERITY_UNSPECIFIED = 0;
+  DIAGNOSTIC_SEVERITY_INFO = 1;
+  DIAGNOSTIC_SEVERITY_WARNING = 2;
+  DIAGNOSTIC_SEVERITY_ERROR = 3;
+  DIAGNOSTIC_SEVERITY_CRITICAL = 4;
+}
+
+message ReadTelemetrySnapshotRequest {
+  TelemetryDetail detail = 1;
+  uint64 request_sequence = 2;
+
+  // Empty requests all board-owned points. Exact canonical string NodeIds can
+  // be supplied to reduce payload size for diagnostic clients.
+  repeated string node_ids = 3;
+
+  // When true, return known board-owned points even if no value is currently
+  // available. This is useful for contract and commissioning checks.
+  bool include_unavailable = 4;
+}
+
+message TelemetryPoint {
+  string node_id = 1;
+  string engineering_unit = 2;
+  TelemetryQuality quality = 3;
+  uint64 sample_time_unix_ns = 4;
+  uint64 sample_monotonic_ns = 5;
+  string source = 6;
+  uint32 error_code = 7;
+  string detail = 8;
+
+  // These variants correspond exactly to the workbook Boolean, Integer, Long,
+  // Double, String, and DateTime data types.
+  oneof value {
+    bool boolean_value = 20;
+    sint32 integer_value = 21;
+    sint64 long_value = 22;
+    double double_value = 23;
+    string string_value = 24;
+    sint64 datetime_unix_ns = 25;
+  }
+}
+
+message TelemetryDiagnostic {
+  DiagnosticSeverity severity = 1;
+  string component = 2;
+  uint32 code = 3;
+  string message = 4;
+  uint64 first_seen_time_unix_ns = 5;
+  uint64 last_seen_time_unix_ns = 6;
+  uint64 occurrence_count = 7;
+}
+
+message ReadTelemetrySnapshotResponse {
+  bool success = 1;
+  string message = 2;
+  uint32 schema_major = 3;
+  uint32 schema_minor = 4;
+  // SHA-256 of this canonical .proto source file used for the build.
+  string schema_source_sha256 = 5;
+  string contract_revision = 6;
+  string board_id = 7;
+  uint64 request_sequence = 8;
+  uint64 snapshot_sequence = 9;
+  uint64 snapshot_time_unix_ns = 10;
+  uint64 snapshot_monotonic_ns = 11;
+  bool wall_clock_synchronized = 12;
+  repeated TelemetryPoint points = 13;
+  repeated TelemetryDiagnostic diagnostics = 14;
+}
