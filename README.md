@@ -23,6 +23,9 @@ Current Rust migration pieces:
 - `SlowControlStatusRequest` uses message type `1000` and reports preflight/RPU status.
 - `daphne-sc-server --rpu-rpmsg PATH` selects the fixed-size RPU wire transport.
 - Endpoint MMCM lock and FSM/timestamp readiness are part of the AFE preflight gate.
+- `opcua-bridge` is the C++ NP04 vertical-slice bridge that projects DAPHNE
+  ZMQ/protobuf status and a USB/SCPI power supply into an OPC-UA namespace for
+  later Ignition integration.
 
 ## Current Starting Point
 
@@ -37,3 +40,11 @@ Current Rust migration pieces:
 - `crates/daphne-sc-server`: Linux userspace server entry point.
 - `proto`: additive protobuf messages for status and RPU-backed AFE control.
 - `docs`: migration notes and hardware ownership decisions.
+- `opcua-bridge`: standalone C++ OPC-UA bridge prototype for the NP04
+  DAPHNE/USB-power-supply vertical slice.
+
+The bridge can now load the proposed-v8 workbook exports as its canonical
+`urn:dune:pds:daphne` information model. For one HD board the 383 patterns
+expand to 1,416 typed read nodes and 21 policy methods; unavailable backends
+publish bad OPC-UA quality rather than plausible-looking defaults. See
+`docs/daphne15-v8-smoke-2026-08-17.md` for the read-only CERN validation.

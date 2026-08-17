@@ -1,0 +1,23 @@
+[Unit]
+Description=PDS NP04 OPC-UA bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/daphne-sc
+ExecStart=/opt/daphne-sc/build/opcua-bridge/pds-opcua-bridge --config /etc/pds-opcua-bridge/np04-onl-004.conf
+Restart=on-failure
+RestartSec=5
+User=pds-sc
+Group=pds-sc
+
+# Allow read/write access through udev rules for the final USB power-supply
+# device instead of running this service as root.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

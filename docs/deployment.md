@@ -86,3 +86,16 @@ using the same port:
 sudo systemctl restart clockchip.service
 sudo systemctl start daphne-sc.service
 ```
+
+## v8 OPC-UA integration test
+
+The workbook-driven bridge has a separate read-only DAPHNE-015 test profile at
+`opcua-bridge/config/np04-daphne-015-v8-test.example.conf`. It is intended to
+run on `np04-onl-004`, not on the PetaLinux board, and uses OPC-UA port 4841.
+The profile leaves every write gate disabled and consumes the exported
+`tag_list.csv` and `opc_ua_control_policy.csv` from the proposed-v8 ICD.
+
+Do not install it persistently until certificates, authenticated identities,
+SC/DPS admission inputs, and production instance inventories are approved. The
+2026-08-17 smoke-test evidence is recorded in
+`docs/daphne15-v8-smoke-2026-08-17.md`.

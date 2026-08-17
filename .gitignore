@@ -1,6 +1,6 @@
 /target/
+/build/
 **/*.rs.bk
 .env
 .env.*
 *.log
-
