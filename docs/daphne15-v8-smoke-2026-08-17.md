@@ -38,6 +38,21 @@ newer than `GLIBC_2.34` and `GLIBCXX_3.4.30`, and was checksum-verified after
 transfer. It used `--telemetry-only`, which skips I2C/SPI peripheral
 initialization and exposes only the read-only v8 snapshot command.
 
+The final traceable build and staging identifiers are:
+
+```text
+daphneZMQ source commit                 578346b46fb06d894a7a8678ea7f835302cefa01
+daphne-sc bridge source commit          a8dc089
+protobuf source SHA-256                 a7463652fb48eb37333d2a883b49b2376d72efd5695bc147b7f20f717f89cbdb
+ARM bundle SHA-256                      e2ba9b964cc76107c622e0d0c471e97262285e5c2a15c7d5af28542aa559b876
+ARM daphneServer-v8 SHA-256             416bd585e75c55ecce477535b0b9a6e60beb13df826c0fa1103d8a2e08007985
+board staging directory                 /home/petalinux/daphne-v8-telemetry-578346b
+```
+
+`Firmware.ServerVersion` returned `578346b` through OPC-UA during the final
+test, confirming that the tested binary was built from the clean producer
+commit rather than an uncommitted workspace.
+
 One snapshot contained exactly 1,370 unique board-owned points:
 
 ```text
