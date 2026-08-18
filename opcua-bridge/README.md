@@ -250,7 +250,7 @@ replace or restart `daphne.service` on the board. The production service stays
 on port 40001.
 
 The latest hardware result, artifact hashes, and teardown evidence are in
-[`docs/daphne15-v8-smoke-2026-08-18.md`](../docs/daphne15-v8-smoke-2026-08-18.md).
+[`docs/daphne15-v8-explicit-smoke-2026-08-18.md`](../docs/daphne15-v8-explicit-smoke-2026-08-18.md).
 
 ## NP04 Hardware Probe
 
