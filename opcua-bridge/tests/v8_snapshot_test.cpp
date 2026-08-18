@@ -39,6 +39,12 @@ std::string Serialize(const Response& response) {
   return payload;
 }
 
+void ClearPointValue(daphne::telemetry::v8::TelemetryPoint* point) {
+  const auto* value = point->GetDescriptor()->FindOneofByName("value");
+  Require(value != nullptr, "TelemetryPoint value oneof exists");
+  point->GetReflection()->ClearOneof(point, value);
+}
+
 template <typename Change>
 void RequireRejected(Change change, const std::string& message) {
   auto response = MakeValidResponse();
@@ -92,7 +98,7 @@ int main() {
       "point outside the configured board must be rejected");
   RequireRejected([](Response& response) { *response.add_points() = response.points(0); },
                   "duplicate NodeId must be rejected");
-  RequireRejected([](Response& response) { response.mutable_points(0)->clear_value(); },
+  RequireRejected([](Response& response) { ClearPointValue(response.mutable_points(0)); },
                   "Good point without a value must be rejected");
   RequireRejected(
       [](Response& response) {
