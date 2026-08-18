@@ -3,16 +3,13 @@
 #include <open62541/plugin/accesscontrol_default.h>
 
 #include <google/protobuf/message.h>
-#include <google/protobuf/util/json_util.h>
 #include <zmq.hpp>
 
-#include "daphneV3_high_level_confs.pb.h"
-#include "daphneV3_low_level_confs.pb.h"
-#include "daphne_v8_telemetry.pb.h"
+#include "daphne_client.hpp"
+#include "opcua_snapshot_writer.hpp"
 #include "registry.hpp"
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -495,39 +492,8 @@ Config loadConfig(const std::string &path) {
     return config;
 }
 
-struct DaphneStatus {
-    bool enabled = true;
-    bool connected = false;
-    bool success = false;
-    bool firmwareLoaded = false;
-    bool rpuAvailable = false;
-    bool rpuRunning = false;
-    bool mmcm0Locked = false;
-    bool mmcm1Locked = false;
-    uint64_t testRegValue = 0;
-    double vBias0 = 0.0;
-    double vBias1 = 0.0;
-    double vBias2 = 0.0;
-    double vBias3 = 0.0;
-    double vBias4 = 0.0;
-    double powerMinus5V = 0.0;
-    double powerPlus2p5V = 0.0;
-    double powerCeV = 0.0;
-    double temperatureC = 0.0;
-    int railCount = 0;
-    int temperatureCount = 0;
-    int errorCount = 0;
-    std::string message = "not polled";
-    std::string firmwareBuildId;
-    std::string testRegHex = "0x00000000";
-    std::string generalInfo = "{}";
-    std::string rails = "[]";
-    std::string errors = "[]";
-    std::string lastUpdate;
-    uint64_t updateTimeNs = 0;
-    bool telemetryV8 = false;
-    daphne::telemetry::v8::ReadTelemetrySnapshotResponse telemetry;
-};
+using pds::bridge::DaphneClient;
+using pds::bridge::DaphneStatus;
 
 struct PowerStatus {
     bool enabled = true;
@@ -539,471 +505,6 @@ struct PowerStatus {
     std::string fault;
     std::string message = "not polled";
     std::string lastUpdate;
-};
-
-class DaphneClient {
-  public:
-    DaphneClient(zmq::context_t &context, bool enabled, bool fake, std::string boardId,
-                 std::string endpoint, std::string route, int timeoutMs)
-        : enabled_(enabled),
-          fake_(fake),
-          boardId_(std::move(boardId)),
-          endpoint_(std::move(endpoint)),
-          route_(std::move(route)),
-          timeoutMs_(timeoutMs),
-          socket_(context, zmq::socket_type::dealer) {
-        const int linger = 0;
-        const int recvTimeout = timeoutMs_;
-        const int sendTimeout = timeoutMs_;
-        std::ostringstream identityStream;
-        identityStream << "pds-opcua-bridge-" << getpid() << "-" << nowNs();
-        const std::string identity = identityStream.str();
-#if defined(CPPZMQ_VERSION) && defined(ZMQ_MAKE_VERSION) && CPPZMQ_VERSION >= ZMQ_MAKE_VERSION(4, 7, 0)
-        socket_.set(zmq::sockopt::linger, linger);
-        socket_.set(zmq::sockopt::rcvtimeo, recvTimeout);
-        socket_.set(zmq::sockopt::sndtimeo, sendTimeout);
-        socket_.set(zmq::sockopt::routing_id, identity);
-#else
-        socket_.setsockopt(ZMQ_LINGER, &linger, sizeof(linger));
-        socket_.setsockopt(ZMQ_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
-        socket_.setsockopt(ZMQ_SNDTIMEO, &sendTimeout, sizeof(sendTimeout));
-        socket_.setsockopt(ZMQ_IDENTITY, identity.data(), identity.size());
-#endif
-        if(enabled_ && !fake_)
-            socket_.connect(endpoint_);
-    }
-
-    DaphneStatus poll() {
-        DaphneStatus status;
-        status.enabled = enabled_;
-        status.lastUpdate = nowIsoLike();
-        status.updateTimeNs = nowNs();
-        if(!enabled_) {
-            status.message = "disabled";
-            return status;
-        }
-        if(fake_)
-            return fakeStatus();
-
-        std::string telemetryError;
-        try {
-            return pollTelemetryV8();
-        } catch(const std::exception &err) {
-            telemetryError = err.what();
-        }
-
-        try {
-            daphne::TestRegRequest testReq;
-            const auto testEnv = sendRequest(
-                testReq, daphne::MT2_READ_TEST_REG_REQ, daphne::MT2_READ_TEST_REG_RESP);
-            daphne::TestRegResponse testResp;
-            if(!testResp.ParseFromString(testEnv.payload())) {
-                status.message = "bad TestRegResponse payload";
-                return status;
-            }
-            if(testResp.value() != 0xDEADBEEFULL) {
-                status.connected = true;
-                status.testRegValue = testResp.value();
-                status.testRegHex = hex64(testResp.value());
-                status.message = "unexpected test register value " + status.testRegHex;
-                return status;
-            }
-
-            daphne::InfoRequest infoReq;
-            infoReq.set_level(0);
-            const auto infoEnv = sendRequest(
-                infoReq, daphne::MT2_READ_GENERAL_INFO_REQ, daphne::MT2_READ_GENERAL_INFO_RESP);
-            daphne::GeneralInfo info;
-            if(!info.ParseFromString(infoEnv.payload())) {
-                status.connected = true;
-                status.message = "bad GeneralInfo payload";
-                return status;
-            }
-
-            status.connected = true;
-            status.success = true;
-            status.testRegValue = testResp.value();
-            status.testRegHex = hex64(testResp.value());
-            status.message = "legacy daphneServer V2 readback ok; v8 unavailable: " +
-                             telemetryError;
-            status.firmwareBuildId = "legacy-daphneServer-v2";
-            status.vBias0 = info.v_bias_0();
-            status.vBias1 = info.v_bias_1();
-            status.vBias2 = info.v_bias_2();
-            status.vBias3 = info.v_bias_3();
-            status.vBias4 = info.v_bias_4();
-            status.powerMinus5V = info.power_minus5v();
-            status.powerPlus2p5V = info.power_plus2p5v();
-            status.powerCeV = info.power_ce();
-            status.temperatureC = info.temperature();
-            status.railCount = 3;
-            status.temperatureCount = 1;
-            status.errorCount = 0;
-            status.generalInfo = generalInfoJson(info);
-            status.rails = railsJson(info);
-            status.errors = "[]";
-        } catch(const std::exception &err) {
-            status.message = std::string("DAPHNE poll failed: v8=") + telemetryError +
-                             "; legacy=" + err.what();
-        }
-        return status;
-    }
-
-    std::string execute(const std::string &operation, const std::string &requestJson) {
-        if(!enabled_)
-            throw std::runtime_error("DAPHNE backend is disabled");
-        if(operation == "ConfigureRun" || operation == "ConfigureFrontend") {
-            return transactJson<daphne::ConfigureRequest, daphne::ConfigureResponse>(
-                operation, requestJson, daphne::MT2_CONFIGURE_FE_REQ,
-                daphne::MT2_CONFIGURE_FE_RESP);
-        }
-        if(operation == "ConfigureClocks") {
-            return transactJson<daphne::ConfigureCLKsRequest, daphne::ConfigureCLKsResponse>(
-                operation, requestJson, daphne::MT2_CONFIGURE_CLKS_REQ,
-                daphne::MT2_CONFIGURE_CLKS_RESP);
-        }
-        if(operation == "SetControlledBias") {
-            return transactJson<daphne::cmd_writeVbiasControl,
-                                daphne::cmd_writeVbiasControl_response>(
-                operation, requestJson, daphne::MT2_WRITE_VBIAS_CONTROL_REQ,
-                daphne::MT2_WRITE_VBIAS_CONTROL_RESP);
-        }
-        if(operation == "SetAfePowerState") {
-            return transactJson<daphne::cmd_setAFEPowerState,
-                                daphne::cmd_setAFEPowerState_response>(
-                operation, requestJson, daphne::MT2_SET_AFE_POWERSTATE_REQ,
-                daphne::MT2_SET_AFE_POWERSTATE_RESP);
-        }
-        if(operation == "ResetAfe") {
-            return transactJson<daphne::cmd_doAFEReset, daphne::cmd_doAFEReset_response>(
-                operation, requestJson, daphne::MT2_DO_AFE_RESET_REQ,
-                daphne::MT2_DO_AFE_RESET_RESP);
-        }
-        if(operation == "AlignAfes") {
-            return transactJson<daphne::cmd_alignAFEs, daphne::cmd_alignAFEs_response>(
-                operation, requestJson, daphne::MT2_ALIGN_AFE_REQ,
-                daphne::MT2_ALIGN_AFE_RESP);
-        }
-        if(operation == "SoftwareTrigger") {
-            return transactJson<daphne::cmd_doSoftwareTrigger,
-                                daphne::cmd_doSoftwareTrigger_response>(
-                operation, requestJson, daphne::MT2_DO_SOFTWARE_TRIGGER_REQ,
-                daphne::MT2_DO_SOFTWARE_TRIGGER_RESP);
-        }
-        if(operation == "DumpSpyBuffers") {
-            return transactJson<daphne::DumpSpyBuffersRequest,
-                                daphne::DumpSpyBuffersResponse>(
-                operation, requestJson, daphne::MT2_DUMP_SPYBUFFER_REQ,
-                daphne::MT2_DUMP_SPYBUFFER_RESP);
-        }
-        if(operation == "WriteAfeRegister") {
-            return transactJson<daphne::cmd_writeAFEReg, daphne::cmd_writeAFEReg_response>(
-                operation, requestJson, daphne::MT2_WRITE_AFE_REG_REQ,
-                daphne::MT2_WRITE_AFE_REG_RESP);
-        }
-        throw std::runtime_error("no DAPHNE backend adapter for operation " + operation);
-    }
-
-  private:
-    DaphneStatus pollTelemetryV8() {
-        daphne::telemetry::v8::ReadTelemetrySnapshotRequest request;
-        request.set_detail(daphne::telemetry::v8::TELEMETRY_DETAIL_STANDARD);
-        request.set_request_sequence(nextTelemetrySequence_++);
-        request.set_include_unavailable(true);
-        const auto envelope = sendRequest(
-            request, daphne::MT2_READ_TELEMETRY_SNAPSHOT_REQ,
-            daphne::MT2_READ_TELEMETRY_SNAPSHOT_RESP);
-        daphne::telemetry::v8::ReadTelemetrySnapshotResponse response;
-        if(!response.ParseFromString(envelope.payload()))
-            throw std::runtime_error("bad ReadTelemetrySnapshotResponse payload");
-        if(!response.success())
-            throw std::runtime_error("telemetry response failed: " + response.message());
-        if(response.schema_major() != 1)
-            throw std::runtime_error("unsupported telemetry schema major " +
-                                     std::to_string(response.schema_major()));
-        if(response.schema_source_sha256().size() != 64 ||
-           !std::all_of(response.schema_source_sha256().begin(),
-                        response.schema_source_sha256().end(),
-                        [](unsigned char value) { return std::isxdigit(value) != 0; }))
-            throw std::runtime_error("missing or malformed telemetry schema source hash");
-        if(response.board_id() != boardId_)
-            throw std::runtime_error("telemetry board_id mismatch: expected " + boardId_ +
-                                     ", got " + response.board_id());
-        if(response.request_sequence() != request.request_sequence())
-            throw std::runtime_error("telemetry request_sequence mismatch");
-        if(response.points_size() == 0)
-            throw std::runtime_error("telemetry response contains no points");
-
-        std::set<std::string> nodeIds;
-        const std::string boardPrefix = "DAPHNE.Boards." + boardId_ + ".";
-        size_t good = 0;
-        size_t unavailable = 0;
-        size_t invalid = 0;
-        for(const auto &point : response.points()) {
-            if(point.node_id().rfind(boardPrefix, 0) != 0)
-                throw std::runtime_error("telemetry point is outside configured board: " +
-                                         point.node_id());
-            if(!nodeIds.insert(point.node_id()).second)
-                throw std::runtime_error("duplicate telemetry NodeId: " + point.node_id());
-            const bool hasValue = point.value_case() !=
-                                  daphne::telemetry::v8::TelemetryPoint::VALUE_NOT_SET;
-            if((point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD ||
-                point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_STALE) &&
-               !hasValue)
-                throw std::runtime_error("telemetry point lacks value: " + point.node_id());
-            if((point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_UNAVAILABLE ||
-                point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_NOT_APPLICABLE) &&
-               hasValue)
-                throw std::runtime_error("unavailable telemetry point carries a value: " +
-                                         point.node_id());
-            switch(point.quality()) {
-            case daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD: ++good; break;
-            case daphne::telemetry::v8::TELEMETRY_QUALITY_UNAVAILABLE: ++unavailable; break;
-            case daphne::telemetry::v8::TELEMETRY_QUALITY_INVALID: ++invalid; break;
-            default: break;
-            }
-        }
-
-        DaphneStatus status;
-        status.enabled = enabled_;
-        status.connected = true;
-        status.success = true;
-        status.telemetryV8 = true;
-        status.telemetry = std::move(response);
-        status.lastUpdate = nowIsoLike();
-        status.updateTimeNs = status.telemetry.snapshot_time_unix_ns() != 0
-                                  ? status.telemetry.snapshot_time_unix_ns()
-                                  : nowNs();
-        status.errorCount = static_cast<int>(invalid);
-        std::ostringstream message;
-        message << "v8 telemetry ok: points=" << status.telemetry.points_size()
-                << " good=" << good << " unavailable=" << unavailable
-                << " invalid=" << invalid;
-        status.message = message.str();
-
-        auto findPoint = [&](const std::string &suffix)
-            -> const daphne::telemetry::v8::TelemetryPoint * {
-            const std::string id = boardPrefix + suffix;
-            for(const auto &point : status.telemetry.points()) {
-                if(point.node_id() == id &&
-                   point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD)
-                    return &point;
-            }
-            return nullptr;
-        };
-        if(const auto *point = findPoint("Firmware.Loaded");
-           point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kBooleanValue)
-            status.firmwareLoaded = point->boolean_value();
-        if(const auto *point = findPoint("Firmware.BuildId");
-           point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kStringValue)
-            status.firmwareBuildId = point->string_value();
-        if(const auto *point = findPoint("Timing.Mmcm0Locked");
-           point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kBooleanValue)
-            status.mmcm0Locked = point->boolean_value();
-        if(const auto *point = findPoint("Timing.Mmcm1Locked");
-           point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kBooleanValue)
-            status.mmcm1Locked = point->boolean_value();
-        const std::array<double DaphneStatus::*, 5> biasMembers{{
-            &DaphneStatus::vBias0, &DaphneStatus::vBias1, &DaphneStatus::vBias2,
-            &DaphneStatus::vBias3, &DaphneStatus::vBias4,
-        }};
-        for(size_t afe = 0; afe < biasMembers.size(); ++afe) {
-            if(const auto *point = findPoint("AFE.Blocks." + std::to_string(afe) +
-                                             ".BiasVoltage");
-               point && point->value_case() ==
-                            daphne::telemetry::v8::TelemetryPoint::kDoubleValue)
-                status.*biasMembers[afe] = point->double_value();
-        }
-        return status;
-    }
-
-    template <typename Request, typename Response>
-    std::string transactJson(const std::string &operation, const std::string &requestJson,
-                             daphne::MessageTypeV2 requestType,
-                             daphne::MessageTypeV2 responseType) {
-        Request request;
-        const std::string json = trim(requestJson).empty() ? "{}" : requestJson;
-        const auto parseStatus = google::protobuf::util::JsonStringToMessage(json, &request);
-        if(!parseStatus.ok())
-            throw std::runtime_error("invalid " + operation + " JSON: " +
-                                     parseStatus.ToString());
-        if(fake_)
-            return "{\"success\":true,\"message\":\"fake " + operation +
-                   " accepted\"}";
-
-        const auto responseEnvelope = sendRequest(request, requestType, responseType);
-        Response response;
-        if(!response.ParseFromString(responseEnvelope.payload()))
-            throw std::runtime_error("bad " + operation + " response payload");
-        std::string responseJson;
-        const auto printStatus =
-            google::protobuf::util::MessageToJsonString(response, &responseJson);
-        if(!printStatus.ok())
-            throw std::runtime_error("cannot encode " + operation + " response: " +
-                                     printStatus.ToString());
-        return responseJson;
-    }
-
-    DaphneStatus fakeStatus() const {
-        DaphneStatus status;
-        status.enabled = enabled_;
-        status.connected = true;
-        status.success = true;
-        status.firmwareLoaded = true;
-        status.rpuAvailable = false;
-        status.rpuRunning = false;
-        status.mmcm0Locked = true;
-        status.mmcm1Locked = true;
-        status.testRegValue = 0xDEADBEEFULL;
-        status.testRegHex = "0x00000000DEADBEEF";
-        status.vBias0 = 0.63150;
-        status.vBias1 = 0.45927;
-        status.vBias2 = 0.0;
-        status.vBias3 = 0.00594;
-        status.vBias4 = 0.01386;
-        status.powerMinus5V = -5.02533;
-        status.powerPlus2p5V = 3.30020;
-        status.powerCeV = 1.80146;
-        status.temperatureC = 0.0;
-        status.railCount = 3;
-        status.temperatureCount = 1;
-        status.errorCount = 0;
-        status.message = "fake legacy daphneServer V2 readback";
-        status.firmwareBuildId = "fake-legacy-daphneServer-v2";
-        status.generalInfo = generalInfoJson(status);
-        status.rails = railsJson(status);
-        status.errors = "[]";
-        status.lastUpdate = nowIsoLike();
-        status.updateTimeNs = nowNs();
-        return status;
-    }
-
-    template <typename Request>
-    daphne::ControlEnvelopeV2 sendRequest(
-        const Request &request,
-        daphne::MessageTypeV2 requestType,
-        daphne::MessageTypeV2 responseType) {
-        std::string reqPayload;
-        request.SerializeToString(&reqPayload);
-
-        daphne::ControlEnvelopeV2 env;
-        env.set_version(2);
-        env.set_dir(daphne::DIR_REQUEST);
-        env.set_type(requestType);
-        env.set_payload(reqPayload);
-        env.set_task_id(nextMsgId_);
-        env.set_msg_id(nextMsgId_++);
-        env.set_route(route_);
-        env.set_timestamp_ns(nowNs());
-
-        std::string bytes;
-        env.SerializeToString(&bytes);
-        if(!socket_.send(zmq::buffer(bytes), zmq::send_flags::none))
-            throw std::runtime_error("ZMQ send timed out");
-
-        // A late response can remain queued after a timeout. Discard stale
-        // envelopes until the response correlated to this request arrives,
-        // while keeping one overall timeout budget for the operation.
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs_);
-        for(;;) {
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now());
-            if(remaining.count() <= 0)
-                throw std::runtime_error("ZMQ receive timed out");
-#if defined(CPPZMQ_VERSION) && defined(ZMQ_MAKE_VERSION) && CPPZMQ_VERSION >= ZMQ_MAKE_VERSION(4, 7, 0)
-            socket_.set(zmq::sockopt::rcvtimeo, static_cast<int>(remaining.count()));
-#else
-            const int receiveTimeout = static_cast<int>(remaining.count());
-            socket_.setsockopt(ZMQ_RCVTIMEO, &receiveTimeout, sizeof(receiveTimeout));
-#endif
-
-            zmq::message_t responseBytes;
-            const auto received = socket_.recv(responseBytes, zmq::recv_flags::none);
-            if(!received)
-                throw std::runtime_error("ZMQ receive timed out");
-
-            daphne::ControlEnvelopeV2 responseEnv;
-            if(!responseEnv.ParseFromArray(
-                   responseBytes.data(), static_cast<int>(responseBytes.size())))
-                throw std::runtime_error("bad ControlEnvelopeV2 response");
-            if(responseEnv.correl_id() != 0 &&
-               responseEnv.correl_id() != env.msg_id())
-                continue;
-            if(responseEnv.type() != responseType) {
-                throw std::runtime_error("unexpected DAPHNE response type " +
-                                         std::to_string(responseEnv.type()));
-            }
-            return responseEnv;
-        }
-    }
-
-    static std::string hex64(uint64_t value) {
-        std::ostringstream out;
-        out << "0x" << std::uppercase << std::hex << std::setw(16)
-            << std::setfill('0') << value;
-        return out.str();
-    }
-
-    static std::string generalInfoJson(const daphne::GeneralInfo &info) {
-        std::ostringstream out;
-        out << "{\"v_bias_0\":" << info.v_bias_0()
-            << ",\"v_bias_1\":" << info.v_bias_1()
-            << ",\"v_bias_2\":" << info.v_bias_2()
-            << ",\"v_bias_3\":" << info.v_bias_3()
-            << ",\"v_bias_4\":" << info.v_bias_4()
-            << ",\"power_minus5v\":" << info.power_minus5v()
-            << ",\"power_plus2p5v\":" << info.power_plus2p5v()
-            << ",\"power_ce\":" << info.power_ce()
-            << ",\"temperature\":" << info.temperature() << '}';
-        return out.str();
-    }
-
-    static std::string generalInfoJson(const DaphneStatus &status) {
-        std::ostringstream out;
-        out << "{\"v_bias_0\":" << status.vBias0
-            << ",\"v_bias_1\":" << status.vBias1
-            << ",\"v_bias_2\":" << status.vBias2
-            << ",\"v_bias_3\":" << status.vBias3
-            << ",\"v_bias_4\":" << status.vBias4
-            << ",\"power_minus5v\":" << status.powerMinus5V
-            << ",\"power_plus2p5v\":" << status.powerPlus2p5V
-            << ",\"power_ce\":" << status.powerCeV
-            << ",\"temperature\":" << status.temperatureC << '}';
-        return out.str();
-    }
-
-    static std::string railsJson(const daphne::GeneralInfo &info) {
-        std::ostringstream out;
-        out << "[{\"name\":\"-5V\",\"voltage_v\":" << info.power_minus5v()
-            << ",\"status\":\"readback\"}"
-            << ",{\"name\":\"+3.3V_PDS\",\"voltage_v\":" << info.power_plus2p5v()
-            << ",\"status\":\"readback\"}"
-            << ",{\"name\":\"+1.8V_A\",\"voltage_v\":" << info.power_ce()
-            << ",\"status\":\"readback\"}]";
-        return out.str();
-    }
-
-    static std::string railsJson(const DaphneStatus &status) {
-        std::ostringstream out;
-        out << "[{\"name\":\"-5V\",\"voltage_v\":" << status.powerMinus5V
-            << ",\"status\":\"readback\"}"
-            << ",{\"name\":\"+3.3V_PDS\",\"voltage_v\":" << status.powerPlus2p5V
-            << ",\"status\":\"readback\"}"
-            << ",{\"name\":\"+1.8V_A\",\"voltage_v\":" << status.powerCeV
-            << ",\"status\":\"readback\"}]";
-        return out.str();
-    }
-
-    bool enabled_;
-    bool fake_;
-    std::string boardId_;
-    std::string endpoint_;
-    std::string route_;
-    int timeoutMs_;
-    zmq::socket_t socket_;
-    uint64_t nextMsgId_ = 1;
-    uint64_t nextTelemetrySequence_ = 1;
 };
 
 speed_t baudToTermios(int baud) {
@@ -1760,105 +1261,13 @@ void writeCanonical(UA_Server *server, BridgeState &state, const std::string &id
     }
     writeDataValue(server, state.controlNs, id, value, status, sourceTimestamp);
 }
-
-UA_StatusCode telemetryQualityStatus(
-    daphne::telemetry::v8::TelemetryQuality quality) {
-    switch(quality) {
-    case daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD:
-        return UA_STATUSCODE_GOOD;
-    case daphne::telemetry::v8::TELEMETRY_QUALITY_STALE:
-        return UA_STATUSCODE_UNCERTAINLASTUSABLEVALUE;
-    case daphne::telemetry::v8::TELEMETRY_QUALITY_INVALID:
-        return UA_STATUSCODE_BADINVALIDSTATE;
-    case daphne::telemetry::v8::TELEMETRY_QUALITY_UNAVAILABLE:
-        return UA_STATUSCODE_BADWAITINGFORINITIALDATA;
-    case daphne::telemetry::v8::TELEMETRY_QUALITY_NOT_APPLICABLE:
-        return UA_STATUSCODE_BADNOTSUPPORTED;
-    case daphne::telemetry::v8::TELEMETRY_QUALITY_UNSPECIFIED:
-    default:
-        return UA_STATUSCODE_BADINVALIDSTATE;
-    }
-}
-
-UA_Variant telemetryVariant(const daphne::telemetry::v8::TelemetryPoint &point,
-                            pds::registry::ValueType expectedType,
-                            bool &typeMatches) {
-    typeMatches = true;
-    using Point = daphne::telemetry::v8::TelemetryPoint;
-    switch(expectedType) {
-    case pds::registry::ValueType::Boolean:
-        if(point.value_case() == Point::kBooleanValue)
-            return makeVariant(point.boolean_value());
-        break;
-    case pds::registry::ValueType::Integer:
-        if(point.value_case() == Point::kIntegerValue)
-            return makeVariant(static_cast<int32_t>(point.integer_value()));
-        break;
-    case pds::registry::ValueType::Long:
-        if(point.value_case() == Point::kLongValue)
-            return makeLongVariant(point.long_value());
-        break;
-    case pds::registry::ValueType::Double:
-        if(point.value_case() == Point::kDoubleValue)
-            return makeVariant(point.double_value());
-        break;
-    case pds::registry::ValueType::String:
-        if(point.value_case() == Point::kStringValue)
-            return makeVariant(point.string_value());
-        break;
-    case pds::registry::ValueType::DateTime:
-        if(point.value_case() == Point::kDatetimeUnixNs && point.datetime_unix_ns() >= 0)
-            return makeDateTimeVariant(
-                unixNsToUaDateTime(static_cast<uint64_t>(point.datetime_unix_ns())));
-        break;
-    }
-    if(point.value_case() != Point::VALUE_NOT_SET)
-        typeMatches = false;
-    return makeRegistryInitialValue(expectedType);
-}
-
-size_t applyTelemetrySnapshot(
-    UA_Server *server, BridgeState &state,
-    const daphne::telemetry::v8::ReadTelemetrySnapshotResponse &snapshot,
-    bool transportCurrent) {
-    size_t translationErrors = 0;
-    std::set<std::string> seen;
-    for(const auto &point : snapshot.points()) {
-        if(!seen.insert(point.node_id()).second) {
-            ++translationErrors;
-            continue;
-        }
-        const auto expected = state.registryNodeTypes.find(point.node_id());
-        if(expected == state.registryNodeTypes.end()) {
-            ++translationErrors;
-            continue;
-        }
-        bool typeMatches = true;
-        UA_Variant value = telemetryVariant(point, expected->second, typeMatches);
-        UA_StatusCode status = telemetryQualityStatus(point.quality());
-        const bool missingGoodValue =
-            point.quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD &&
-            point.value_case() == daphne::telemetry::v8::TelemetryPoint::VALUE_NOT_SET;
-        if(!typeMatches || missingGoodValue) {
-            status = UA_STATUSCODE_BADTYPEMISMATCH;
-            ++translationErrors;
-        } else if(!transportCurrent && status == UA_STATUSCODE_GOOD) {
-            status = UA_STATUSCODE_UNCERTAINLASTUSABLEVALUE;
-        }
-        const uint64_t sourceNs = point.sample_time_unix_ns() != 0
-                                      ? point.sample_time_unix_ns()
-                                      : snapshot.snapshot_time_unix_ns();
-        writeCanonical(server, state, point.node_id(), std::move(value), status,
-                       sourceNs == 0 ? 0 : unixNsToUaDateTime(sourceNs));
-    }
-    return translationErrors;
-}
-
 void updateNodes(UA_Server *server, BridgeState &state) {
     static int32_t heartbeat = 0;
     ++heartbeat;
     writeValue(server, state.ns, idOf(state, "bridge.heartbeat"), makeVariant(heartbeat));
 
+    const pds::bridge::OpcUaSnapshotWriter snapshot_writer(
+        server, state.controlNs, state.registryNodeTypes);
     int32_t daphneReadyCount = 0;
     for(auto &board : state.daphnes) {
         DaphneStatus d;
@@ -1982,38 +1391,41 @@ void updateNodes(UA_Server *server, BridgeState &state) {
                                        : std::string("LegacyReadbackSubset")),
                        UA_STATUSCODE_GOOD, currentTimestamp);
 
-        const double biasValues[] = {
-            measurement.vBias0, measurement.vBias1, measurement.vBias2,
-            measurement.vBias3, measurement.vBias4,
-        };
-        for(size_t afe = 0; afe < 5; ++afe) {
-            writeCanonical(server, state,
-                           base + "AFE.Blocks." + std::to_string(afe) + ".BiasVoltage",
-                           makeVariant(biasValues[afe]), measurementStatus,
-                           measurementTimestamp);
-        }
-        writeCanonical(server, state, base + "Power.BoardRails.Minus5VA.Voltage",
-                       makeVariant(measurement.powerMinus5V), measurementStatus,
-                       measurementTimestamp);
-        writeCanonical(server, state, base + "Power.BoardRails.3V3PDS.Voltage",
-                       makeVariant(measurement.powerPlus2p5V), measurementStatus,
-                       measurementTimestamp);
-        writeCanonical(server, state, base + "Power.BoardRails.1V8A.Voltage",
-                       makeVariant(measurement.powerCeV), measurementStatus,
-                       measurementTimestamp);
-        for(const auto &rail : {std::string("Minus5VA"), std::string("3V3PDS"),
-                                std::string("1V8A")}) {
-            writeCanonical(server, state, base + "Power.BoardRails." + rail + ".Status",
-                           makeVariant(quality), measurementStatus,
-                           measurementTimestamp);
-        }
         if(measurement.telemetryV8) {
-            const size_t translationErrors = applyTelemetrySnapshot(
-                server, state, measurement.telemetry, currentGood);
-            if(translationErrors != 0) {
-                std::cerr << "warning: rejected " << translationErrors
+            const size_t translation_errors =
+                snapshot_writer.Publish(measurement.telemetry, currentGood);
+            if(translation_errors != 0) {
+                std::cerr << "warning: rejected " << translation_errors
                           << " malformed or unknown v8 telemetry points for DAPHNE "
                           << board.id << "\n";
+            }
+        } else {
+            // Older boards expose only this small scalar subset. Native v8
+            // snapshots bypass this compatibility adapter entirely.
+            const double biasValues[] = {
+                measurement.vBias0, measurement.vBias1, measurement.vBias2,
+                measurement.vBias3, measurement.vBias4,
+            };
+            for(size_t afe = 0; afe < 5; ++afe) {
+                writeCanonical(server, state,
+                               base + "AFE.Blocks." + std::to_string(afe) + ".BiasVoltage",
+                               makeVariant(biasValues[afe]), measurementStatus,
+                               measurementTimestamp);
+            }
+            writeCanonical(server, state, base + "Power.BoardRails.Minus5VA.Voltage",
+                           makeVariant(measurement.powerMinus5V), measurementStatus,
+                           measurementTimestamp);
+            writeCanonical(server, state, base + "Power.BoardRails.3V3PDS.Voltage",
+                           makeVariant(measurement.powerPlus2p5V), measurementStatus,
+                           measurementTimestamp);
+            writeCanonical(server, state, base + "Power.BoardRails.1V8A.Voltage",
+                           makeVariant(measurement.powerCeV), measurementStatus,
+                           measurementTimestamp);
+            for(const auto &rail : {std::string("Minus5VA"), std::string("3V3PDS"),
+                                    std::string("1V8A")}) {
+                writeCanonical(server, state, base + "Power.BoardRails." + rail + ".Status",
+                               makeVariant(quality), measurementStatus,
+                               measurementTimestamp);
             }
         }
     }
@@ -2056,7 +1468,7 @@ void daphnePollWorker(BridgeState *state, size_t workerIndex, size_t workerCount
             DaphneStatus status;
             {
                 std::lock_guard<std::mutex> clientLock(*board.clientMutex);
-                status = board.client->poll();
+                status = board.client->Poll();
             }
             std::lock_guard<std::mutex> lock(*board.statusMutex);
             if(status.connected && status.success) {
@@ -2203,7 +1615,7 @@ UA_StatusCode daphneMethodCallback(UA_Server *, const UA_NodeId *, void *session
     const auto &request = *static_cast<const UA_String *>(input[0].data);
     try {
         std::lock_guard<std::mutex> lock(*context->board->clientMutex);
-        const std::string response = context->board->client->execute(
+        const std::string response = context->board->client->Execute(
             context->policy.operation, uaString(request));
         return writeMethodOutput(output, response);
     } catch(const std::exception &err) {

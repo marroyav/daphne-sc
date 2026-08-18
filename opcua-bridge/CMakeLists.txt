@@ -48,7 +48,10 @@ foreach(PROTO_FILE IN LISTS PROTO_FILES)
 endforeach()
 
 add_executable(pds-opcua-bridge
+    src/daphne_client.cpp
     src/main.cpp
+    src/opcua_snapshot_writer.cpp
+    src/v8_snapshot.cpp
     ${GENERATED_PROTO_SRCS}
     ${GENERATED_PROTO_HDRS}
 )
@@ -80,6 +83,20 @@ install(TARGETS pds-opcua-bridge pds-registry-check pds-opcua-registry-smoke
         RUNTIME DESTINATION bin)
 
 include(CTest)
+if(BUILD_TESTING)
+    add_executable(pds-v8-snapshot-test
+        tests/v8_snapshot_test.cpp
+        src/v8_snapshot.cpp
+        "${PROTO_OUT_DIR}/daphne_v8_telemetry.pb.cc"
+        "${PROTO_OUT_DIR}/daphne_v8_telemetry.pb.h"
+    )
+    target_include_directories(pds-v8-snapshot-test PRIVATE
+        "${CMAKE_CURRENT_LIST_DIR}/src" "${PROTO_OUT_DIR}")
+    target_link_libraries(pds-v8-snapshot-test PRIVATE protobuf::libprotobuf)
+    target_compile_options(pds-v8-snapshot-test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME daphne-v8-snapshot-validation COMMAND pds-v8-snapshot-test)
+endif()
+
 set(DAPHNE_TAG_LIST "" CACHE FILEPATH "Path to the exported DAPHNE tag_list.csv")
 if(BUILD_TESTING AND DAPHNE_TAG_LIST)
     add_test(NAME daphne-registry-contract

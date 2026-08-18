@@ -123,8 +123,11 @@ The DAPHNE provider talks to the deployed legacy C++ `daphneServer` on
 It first requests the native proposed-v8 snapshot with
 `MT2_READ_TELEMETRY_SNAPSHOT_REQ`/`RESP` (`1002`/`1003`). When the board does
 not implement that additive command, the two legacy reads above remain the
-compatibility fallback. The bridge validates schema major, board ID, request
-sequence, board prefix, and duplicate NodeIds before publishing a v8 snapshot.
+compatibility fallback. The bridge validates schema identity/revision, board
+ID, request sequence, board prefix, duplicate NodeIds, and value/quality
+combinations before publishing a v8 snapshot.
+For the shortest source walkthrough, see
+[`V8_CODE_PATH.md`](V8_CODE_PATH.md).
 
 Power-supply monitoring uses SCPI-style USBTMC or serial commands.
 
