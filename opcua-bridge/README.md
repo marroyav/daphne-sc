@@ -240,6 +240,9 @@ on `NP04-DAPHNE-015.CERN.CH:40002`. It listens on test port 4842 and does not
 replace or restart `daphne.service` on the board. The production service stays
 on port 40001.
 
+The latest hardware result, artifact hashes, and teardown evidence are in
+[`docs/daphne15-v8-smoke-2026-08-18.md`](../docs/daphne15-v8-smoke-2026-08-18.md).
+
 ## NP04 Hardware Probe
 
 Before enabling real endpoints, run the probe from WSL through the CERN jump
