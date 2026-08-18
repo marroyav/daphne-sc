@@ -47,7 +47,7 @@ std::string NowIso8601() {
 template <typename Sample>
 bool HasGoodValue(const Sample& sample) {
   return sample.metadata().quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD &&
-         sample.has_value();
+         sample.reading_case() == Sample::kValue;
 }
 
 }  // namespace
