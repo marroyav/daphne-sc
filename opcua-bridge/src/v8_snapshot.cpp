@@ -25,6 +25,11 @@ using google::protobuf::Message;
 
 constexpr int kExpectedDeclaredWireFields = 316;
 
+template <typename DescriptorType>
+std::string DescriptorName(const DescriptorType* descriptor) {
+  return std::string(descriptor->full_name());
+}
+
 std::string BoardPrefix(const std::string& board_id) { return "DAPHNE.Boards." + board_id + "."; }
 
 void ReplaceAll(std::string* value, const std::string& token, const std::string& replacement) {
@@ -70,7 +75,7 @@ WireValueType ValueTypeForSample(const Message& sample) {
     return WireValueType::DateTime;
   }
   throw std::runtime_error("BoardTelemetry field has unsupported sample type: " +
-                           descriptor->full_name());
+                           DescriptorName(descriptor));
 }
 
 WireSampleView MakeSampleView(std::string node_id, const Message& sample) {
@@ -102,19 +107,19 @@ std::string RenderIndexedNodeId(const std::string& pattern, const Message& entry
   if (sample_field == nullptr || sample_field->cpp_type() != FieldDescriptor::CPPTYPE_MESSAGE ||
       descriptor->field_count() != static_cast<int>(placeholders.size()) + 1) {
     throw std::runtime_error("indexed protobuf wrapper has an invalid declared shape: " +
-                             descriptor->full_name());
+                             DescriptorName(descriptor));
   }
   for (size_t index = 0; index < placeholders.size(); ++index) {
     const std::string& placeholder = placeholders[index];
     const FieldDescriptor* key_field = descriptor->field(static_cast<int>(index));
     if (key_field == sample_field || key_field->cpp_type() != FieldDescriptor::CPPTYPE_STRING) {
       throw std::runtime_error("indexed protobuf key is not a declared string for {" + placeholder +
-                               "}: " + descriptor->full_name());
+                               "}: " + DescriptorName(descriptor));
     }
     const std::string key = reflection->GetString(entry, key_field);
     if (key.empty()) {
       throw std::runtime_error("indexed protobuf wrapper has empty key for {" + placeholder +
-                               "}: " + descriptor->full_name());
+                               "}: " + DescriptorName(descriptor));
     }
     ReplaceAll(&node_id, "{" + placeholder + "}", key);
   }
@@ -184,12 +189,12 @@ void VisitWireSamples(const daphne::telemetry::v8::BoardTelemetry& telemetry,
         !options.HasExtension(daphne::telemetry::v8::data_source) ||
         !options.HasExtension(daphne::telemetry::v8::control_owner)) {
       throw std::runtime_error("BoardTelemetry field lacks traceability annotations: " +
-                               field->full_name());
+                               DescriptorName(field));
     }
     if (options.GetExtension(daphne::telemetry::v8::data_source).empty() ||
         options.GetExtension(daphne::telemetry::v8::control_owner).empty()) {
       throw std::runtime_error("BoardTelemetry field has empty source or owner: " +
-                               field->full_name());
+                               DescriptorName(field));
     }
 
     std::string pattern = options.GetExtension(daphne::telemetry::v8::opcua_node_pattern);
@@ -198,10 +203,11 @@ void VisitWireSamples(const daphne::telemetry::v8::BoardTelemetry& telemetry,
     if (!field->is_repeated()) {
       if (!placeholders.empty()) {
         throw std::runtime_error("scalar BoardTelemetry field contains an instance placeholder: " +
-                                 field->full_name());
+                                 DescriptorName(field));
       }
       if (!reflection->HasField(telemetry, field)) {
-        throw std::runtime_error("explicit BoardTelemetry field is absent: " + field->full_name());
+        throw std::runtime_error("explicit BoardTelemetry field is absent: " +
+                                 DescriptorName(field));
       }
       visitor(MakeSampleView(pattern, reflection->GetMessage(telemetry, field)));
       continue;
@@ -210,7 +216,7 @@ void VisitWireSamples(const daphne::telemetry::v8::BoardTelemetry& telemetry,
     const int entry_count = reflection->FieldSize(telemetry, field);
     if (placeholders.empty() || entry_count == 0) {
       throw std::runtime_error("indexed BoardTelemetry field has no key or instances: " +
-                               field->full_name());
+                               DescriptorName(field));
     }
     for (int entry_index = 0; entry_index < entry_count; ++entry_index) {
       const Message& entry = reflection->GetRepeatedMessage(telemetry, field, entry_index);
@@ -218,7 +224,7 @@ void VisitWireSamples(const daphne::telemetry::v8::BoardTelemetry& telemetry,
       if (sample_field == nullptr || sample_field->cpp_type() != FieldDescriptor::CPPTYPE_MESSAGE ||
           !entry.GetReflection()->HasField(entry, sample_field)) {
         throw std::runtime_error("indexed BoardTelemetry entry lacks typed sample: " +
-                                 entry.GetDescriptor()->full_name());
+                                 DescriptorName(entry.GetDescriptor()));
       }
       visitor(MakeSampleView(RenderIndexedNodeId(pattern, entry, placeholders),
                              entry.GetReflection()->GetMessage(entry, sample_field)));
