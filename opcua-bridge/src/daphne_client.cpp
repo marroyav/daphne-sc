@@ -44,6 +44,12 @@ std::string NowIso8601() {
   return output.str();
 }
 
+template <typename Sample>
+bool HasGoodValue(const Sample& sample) {
+  return sample.metadata().quality() == daphne::telemetry::v8::TELEMETRY_QUALITY_GOOD &&
+         sample.has_value();
+}
+
 }  // namespace
 
 class DaphneClient::Impl {
@@ -220,27 +226,24 @@ class DaphneClient::Impl {
                               : NowNs();
     status.errorCount = static_cast<int>(snapshot.invalid_count);
     std::ostringstream message;
-    message << "v8 telemetry ok: points=" << snapshot.response.points_size()
+    message << "v8 explicit telemetry ok: samples=" << snapshot.sample_count
             << " good=" << snapshot.good_count << " unavailable=" << snapshot.unavailable_count
             << " invalid=" << snapshot.invalid_count;
     status.message = message.str();
 
-    auto find_point =
-        [&](const std::string& suffix) -> const daphne::telemetry::v8::TelemetryPoint* {
-      return snapshot.GoodPoint(suffix);
-    };
-    if (const auto* point = find_point("Firmware.Loaded");
-        point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kBooleanValue)
-      status.firmwareLoaded = point->boolean_value();
-    if (const auto* point = find_point("Firmware.BuildId");
-        point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kStringValue)
-      status.firmwareBuildId = point->string_value();
-    if (const auto* point = find_point("Timing.Mmcm0Locked");
-        point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kBooleanValue)
-      status.mmcm0Locked = point->boolean_value();
-    if (const auto* point = find_point("Timing.Mmcm1Locked");
-        point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kBooleanValue)
-      status.mmcm1Locked = point->boolean_value();
+    const auto& wire = snapshot.response.telemetry();
+    if (HasGoodValue(wire.firmware_loaded())) {
+      status.firmwareLoaded = wire.firmware_loaded().value();
+    }
+    if (HasGoodValue(wire.firmware_build_id())) {
+      status.firmwareBuildId = wire.firmware_build_id().value();
+    }
+    if (HasGoodValue(wire.timing_mmcm0_locked())) {
+      status.mmcm0Locked = wire.timing_mmcm0_locked().value();
+    }
+    if (HasGoodValue(wire.timing_mmcm1_locked())) {
+      status.mmcm1Locked = wire.timing_mmcm1_locked().value();
+    }
     const std::array<double DaphneStatus::*, 5> bias_members{{
         &DaphneStatus::vBias0,
         &DaphneStatus::vBias1,
@@ -248,10 +251,16 @@ class DaphneClient::Impl {
         &DaphneStatus::vBias3,
         &DaphneStatus::vBias4,
     }};
-    for (size_t afe = 0; afe < bias_members.size(); ++afe) {
-      if (const auto* point = find_point("AFE.Blocks." + std::to_string(afe) + ".BiasVoltage");
-          point && point->value_case() == daphne::telemetry::v8::TelemetryPoint::kDoubleValue)
-        status.*bias_members[afe] = point->double_value();
+    for (const auto& reading : wire.afe_blocks_bias_voltage()) {
+      size_t afe = 0;
+      try {
+        afe = static_cast<size_t>(std::stoul(reading.afe()));
+      } catch (...) {
+        continue;
+      }
+      if (afe < bias_members.size() && HasGoodValue(reading.sample())) {
+        status.*bias_members[afe] = reading.sample().value();
+      }
     }
     status.telemetry = std::move(snapshot.response);
     return status;

@@ -124,8 +124,12 @@ It first requests the native proposed-v8 snapshot with
 `MT2_READ_TELEMETRY_SNAPSHOT_REQ`/`RESP` (`1002`/`1003`). When the board does
 not implement that additive command, the two legacy reads above remain the
 compatibility fallback. The bridge validates schema identity/revision, board
-ID, request sequence, board prefix, duplicate NodeIds, and value/quality
-combinations before publishing a v8 snapshot.
+ID, request sequence, all 316 explicit field declarations, instance keys,
+rendered NodeIds, duplicates, and value/quality combinations before publishing
+a v8 snapshot. Schema 2.0 contains no generic NodeId/value record: every
+board-variable pattern is a named, typed Protobuf field with a stable field
+number and trace annotations. The bridge mechanically consumes that contract;
+it does not own a parallel list of DAPHNE wire semantics.
 For the shortest source walkthrough, see
 [`V8_CODE_PATH.md`](V8_CODE_PATH.md).
 
@@ -231,6 +235,11 @@ only when authentication is configured, `daphne.writes_enabled = true`, its
 policy row is executable, its backend mapping matches a compiled adapter, and
 the authenticated role is allowed. The DAPHNE-015 v8 test profile leaves all
 writes disabled.
+
+The v8 snapshot request/response is read-only. DAQ configuration messages and
+their behavior remain owned by the DAQ high-level protobuf and
+`daphnemodules`; exposing a readback in OPC-UA does not authorize the bridge to
+construct a write command.
 
 ## DAPHNE-015 v8 Test
 

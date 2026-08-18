@@ -21,12 +21,14 @@ target_compile_options(pds_registry PRIVATE -Wall -Wextra -Wpedantic)
 
 set(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
 set(PROTO_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(DAPHNE_V8_PROTO "${REPO_ROOT}/proto/upstream/daphne_v8_telemetry.proto")
+file(SHA256 "${DAPHNE_V8_PROTO}" DAPHNE_V8_SCHEMA_SHA256)
 file(MAKE_DIRECTORY "${PROTO_OUT_DIR}")
 
 set(PROTO_FILES
     "${REPO_ROOT}/proto/upstream/daphneV3_high_level_confs.proto"
     "${REPO_ROOT}/proto/upstream/daphneV3_low_level_confs.proto"
-    "${REPO_ROOT}/proto/upstream/daphne_v8_telemetry.proto"
+    "${DAPHNE_V8_PROTO}"
 )
 
 set(GENERATED_PROTO_SRCS)
@@ -66,6 +68,10 @@ target_link_libraries(pds-opcua-bridge
 )
 
 target_compile_options(pds-opcua-bridge PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(
+    pds-opcua-bridge PRIVATE
+    PDS_DAPHNE_V8_SCHEMA_SHA256="${DAPHNE_V8_SCHEMA_SHA256}"
+)
 
 add_executable(pds-registry-check tools/registry_check.cpp)
 target_link_libraries(pds-registry-check PRIVATE pds_registry)
@@ -94,6 +100,10 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_LIST_DIR}/src" "${PROTO_OUT_DIR}")
     target_link_libraries(pds-v8-snapshot-test PRIVATE protobuf::libprotobuf)
     target_compile_options(pds-v8-snapshot-test PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_definitions(
+        pds-v8-snapshot-test PRIVATE
+        PDS_DAPHNE_V8_SCHEMA_SHA256="${DAPHNE_V8_SCHEMA_SHA256}"
+    )
     add_test(NAME daphne-v8-snapshot-validation COMMAND pds-v8-snapshot-test)
 endif()
 

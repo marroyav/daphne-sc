@@ -1382,7 +1382,7 @@ void updateNodes(UA_Server *server, BridgeState &state) {
                        UA_STATUSCODE_GOOD, currentTimestamp);
         writeCanonical(server, state, base + "Bridge.BackendProtocolVersion",
                        makeVariant(measurement.telemetryV8
-                                       ? std::string("ControlEnvelopeV2+daphne.telemetry.v8/1.0")
+                                       ? std::string("ControlEnvelopeV2+daphne.telemetry.v8/2.0")
                                        : std::string("ControlEnvelopeV2")),
                        UA_STATUSCODE_GOOD, currentTimestamp);
         writeCanonical(server, state, base + "Bridge.BackendCompatibilityState",
